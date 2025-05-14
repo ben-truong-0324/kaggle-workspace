@@ -2,10 +2,15 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+*data/
+*storage/
+wandb/wandb/*
+wandb/storage/*
+wandb/mysql/*
+mlruns/*
 # C extensions
 *.so
-
+data/
 # Distribution / packaging
 .Python
 build/

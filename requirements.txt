@@ -1,0 +1,11 @@
+mlflow
+wandb
+scikit-learn
+pandas
+torch
+matplotlib
+seaborn
+numpy
+kaggle
+kagglehub
+ipykernel
