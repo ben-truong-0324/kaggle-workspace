@@ -22,7 +22,7 @@ services:
     working_dir: /home/jovyan/workspace # Set the default working directory
     environment:
       # Set the MLflow tracking URI to the mlflow service
-      - MLFLOW_TRACKING_URI=http://mlflow:5001
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
       # Set the W&B directory
       - WANDB_DIR=/home/jovyan/wandb
       # Optional: Set a W&B API key if needed for advanced features, though local might not require it initially

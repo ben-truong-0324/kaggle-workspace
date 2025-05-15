@@ -9,3 +9,6 @@ numpy
 kaggle
 kagglehub
 ipykernel
+
+xgboost
+lightgbm
