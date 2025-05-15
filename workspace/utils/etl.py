@@ -1,78 +1,79 @@
-import os
-import shutil
-import uuid
-import hashlib
 import json
-import importlib.util
+from pathlib import Path
+import pandas as pd
+import shutil
 import inspect
-import pickle
-import mlflow
-from datetime import datetime
 
-DATA_DIR = "/home/jovyan/data"
+def run_etl(dataset_name: str, target_column: str, ) -> dict:
 
-def hash_file(filepath):
-    with open(filepath, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
+    etl_description = "Default ETL logic"
 
-def run_new_etl(dataset_name: str, raw_data_path: str, etl_script_path: str) -> dict:
-    """
-    Run or reuse an ETL pipeline and track it in MLflow.
+    base_data_dir = Path("/home/jovyan/data") #default jupyter jovyan
+    dataset_specific_base_path = base_data_dir / dataset_name
+    raw_data_target_dir = dataset_specific_base_path / "raw"
+    processed_data_dir = dataset_specific_base_path / "processed"
+    store_path = dataset_specific_base_path / "etl_generated_store.json"
 
-    Args:
-        dataset_name (str): e.g. 'red-wine-quality-cortez-et-al-2009'
-        raw_data_path (str): path to the raw dataset (CSV or folder)
-        etl_script_path (str): path to Python script defining `run_etl(raw_data_path)`
+    # Ensure processed folder exists
+    processed_data_dir.mkdir(parents=True, exist_ok=True)
 
-    Returns:
-        dict: {
-            'etl_version': UUID,
-            'processed_path': str,
-            'etl_script_path': str
-        }
-    """
-    # Hash the ETL script to detect changes
-    etl_hash = hash_file(etl_script_path)
-    etl_version = str(uuid.uuid4())
-    processed_dir = os.path.join(DATA_DIR, "processed", dataset_name, etl_version)
-    os.makedirs(processed_dir, exist_ok=True)
+    # Load existing store
+    if store_path.exists():
+        with open(store_path, "r") as f:
+            store = json.load(f)
+    else:
+        store = {}
 
-    # Start MLflow run for ETL tracking
-    mlflow.set_experiment(f"{dataset_name}_ETL")
-    with mlflow.start_run(run_name=f"ETL_{dataset_name}_{etl_version}"):
-        mlflow.log_param("dataset_name", dataset_name)
-        mlflow.log_param("etl_script_hash", etl_hash)
-        mlflow.log_param("etl_version", etl_version)
-        mlflow.log_param("run_time", datetime.now().isoformat())
+    # Generate next UUID (v1, v2, etc.)
+    existing_versions = [int(k[1:]) for k in store.keys() if k.startswith("v") and k[1:].isdigit()]
+    next_version_number = max(existing_versions, default=0) + 1
+    uuid = f"v{next_version_number}"
 
-        # Save script for reproducibility
-        saved_script_path = os.path.join(processed_dir, "etl_script.py")
-        shutil.copy(etl_script_path, saved_script_path)
-        mlflow.log_artifact(saved_script_path)
+    # Load raw data
+    csv_files = list(raw_data_target_dir.glob("*.csv"))
+    if not csv_files:
+        raise FileNotFoundError("No CSV files found in raw data directory.")
+    print(csv_files)
+    df = pd.read_csv(csv_files[0])
+    print("Dataset loaded successfully. Only one file loaded")
+    print("Dataset shape:", df.shape)
+    print("Dataset columns:", df.columns.tolist())
+    print("Dataset head:\n", df.head())
 
-        # Import and run ETL
-        spec = importlib.util.spec_from_file_location("etl_module", etl_script_path)
-        etl_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(etl_module)
+    # Verify target column exists
+    if target_column not in df.columns:
+        raise ValueError(f"Target column '{target_column}' not found in the dataset.")
 
-        if not hasattr(etl_module, "run_etl"):
-            raise AttributeError("ETL script must define a `run_etl(raw_data_path)` function")
+    X = df.drop(target_column, axis=1)
+    y = df[target_column]
+    print(f"Features shape: {X.shape}")
+    print(f"Target shape: {y.shape}")
 
-        print(f"Running ETL from: {etl_script_path}")
-        result = etl_module.run_etl(raw_data_path)
+    # Basic example split
+    from sklearn.model_selection import train_test_split
+    X = df.drop(columns=[target_column])
+    y = df[target_column]
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Save processed result
-        result_path = os.path.join(processed_dir, "data.pkl")
-        with open(result_path, "wb") as f:
-            pickle.dump(result, f)
 
-        mlflow.log_artifact(result_path)
+    etl_source = inspect.getsource(run_etl)
 
-        print(f"✅ ETL complete. Version: {etl_version}")
-        print(f"Processed data saved to: {result_path}")
+    store[uuid] = {
+        "etl_description": etl_description,
+        "target_column": target_column,
+        "etl_source_code": etl_source
+    }
+    
+
+
+    with open(store_path, "w") as f:
+        json.dump(store, f, indent=4)
 
     return {
-        "etl_version": etl_version,
-        "processed_path": result_path,
-        "etl_script_path": saved_script_path
+        "etl_version": uuid,
+        "etl_description": etl_description,
+        "X_train": X_train,
+        "y_train": y_train,
+        "X_val": X_val,
+        "y_val": y_val
     }

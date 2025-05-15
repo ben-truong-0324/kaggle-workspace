@@ -22,7 +22,7 @@ services:
     working_dir: /home/jovyan/workspace # Set the default working directory
     environment:
       # Set the MLflow tracking URI to the mlflow service
-      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_TRACKING_URI=http://mlflow:5001
       # Set the W&B directory
       - WANDB_DIR=/home/jovyan/wandb
       # Optional: Set a W&B API key if needed for advanced features, though local might not require it initially
@@ -43,8 +43,8 @@ services:
     image: ghcr.io/mlflow/mlflow:latest
     container_name: kaggle_mlflow
     ports:
-      # Map host port 5000 to container port 5000 for MLflow UI access
-      - "5000:5000"
+      # Map host port 5001 to container port 5000 for MLflow UI access
+      - "5001:5000"
     volumes:
       # Mount the mlruns directory to store artifact data
       - ./mlruns:/home/mlflow/mlruns
