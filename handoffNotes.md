@@ -6,6 +6,7 @@ This project is a modular ML experimentation environment built for structured da
 
 ## ✅ Current Work Focus
 
+- mlflow needs sqlite storage for runs
 - xgboost also needs y labels normalized
 - Building a flexible model training loop that supports:
   - `sklearn` models (trees, boosting, linear)

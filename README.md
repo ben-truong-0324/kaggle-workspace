@@ -18,6 +18,8 @@ http://localhost:8888
 docker compose down
 docker compose down -v && docker compose up -d
 
+.\scripts\gitpush.bat
+./scripts/gitpush.sh
 
 # The tracking URI is already set by the environment variable in docker-compose.yml
 # mlflow.set_tracking_uri("http://mlflow:5000")

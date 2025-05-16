@@ -43,16 +43,13 @@ services:
     image: ghcr.io/mlflow/mlflow:latest
     container_name: kaggle_mlflow
     ports:
-      # Map host port 5001 to container port 5000 for MLflow UI access
       - "5001:5000"
     volumes:
-      # Mount the mlruns directory to store artifact data
       - ./mlruns:/home/mlflow/mlruns
-    # Command to start the MLflow UI, logging artifacts to the mounted volume
-    command: "mlflow ui --backend-store-uri file:///home/mlflow/mlruns --host 0.0.0.0"
+      - ./mlflow.db:/home/mlflow/mlflow.db
+    command: "mlflow ui --backend-store-uri sqlite:///home/mlflow/mlflow.db --default-artifact-root /home/mlflow/mlruns --host 0.0.0.0"
     networks:
       - kaggle_network
-
   # MySQL service for W&B
   mysql:
     image: mysql:5.7

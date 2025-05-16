@@ -12,21 +12,21 @@
     "support": 10
   },
   "5": {
-    "precision": 0.636,
-    "recall": 0.7,
-    "f1": 0.667,
+    "precision": 0.766,
+    "recall": 0.754,
+    "f1": 0.76,
     "support": 130
   },
   "6": {
-    "precision": 0.528,
-    "recall": 0.644,
-    "f1": 0.58,
+    "precision": 0.647,
+    "recall": 0.765,
+    "f1": 0.701,
     "support": 132
   },
   "7": {
-    "precision": 0.438,
-    "recall": 0.167,
-    "f1": 0.241,
+    "precision": 0.677,
+    "recall": 0.5,
+    "f1": 0.575,
     "support": 42
   },
   "8": {
