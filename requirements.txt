@@ -9,6 +9,9 @@ numpy
 kaggle
 kagglehub
 ipykernel
-
 xgboost
 lightgbm
+
+pytest           
+# pytest-cov      
+flake8   

@@ -116,7 +116,26 @@ def get_raw_dataset(dataset_name, target_column):
     print(f"Target shape: {y.shape}")
     return X, y
 
+# to simulate steraming
+# def run_streaming_style_etl(source: DataSource, target_column: str):
+#     error_log = []
+#     df_all = []
 
+#     for chunk in source.get_batches():
+#         valid_chunk, errors = validate_and_transform(chunk)
+#         error_log.extend(errors)
+#         if not valid_chunk.empty:
+#             df_all.append(valid_chunk)
+
+#     if error_log:
+#         with open(ERROR_LOG_PATH, "w") as f:
+#             json.dump(error_log, f, indent=4)
+
+#     full_df = pd.concat(df_all, ignore_index=True)
+#     full_df = full_df.sort_values("alcohol")  # simulate time-based sorting
+
+#     X = full_df.drop(columns=[target_column])
+#     y = full_df[target_column]
 def run_custom_etl(dataset_name: str, target_column: str, ) -> dict:
     X, y = get_raw_dataset(dataset_name, target_column)
 
@@ -164,3 +183,69 @@ def run_custom_etl(dataset_name: str, target_column: str, ) -> dict:
         "X_val": X_val,
         "y_val": y_val
     }
+
+
+
+def detect_data_drift(X_train, X_val):
+    drift_flags = {}
+    for col in X_train.columns:
+        train_mean = X_train[col].mean()
+        val_mean = X_val[col].mean()
+        delta = abs(train_mean - val_mean)
+        if delta > 0.1:  # arbitrary threshold
+            drift_flags[col] = f"Mean shift detected: {train_mean:.3f} vs {val_mean:.3f}"
+    return drift_flags
+
+
+EXPECTED_SCHEMA = {
+    'fixed acidity': float,
+    'volatile acidity': float,
+    'citric acid': float,
+    'residual sugar': float,
+    'chlorides': float,
+    'free sulfur dioxide': float,
+    'total sulfur dioxide': float,
+    'density': float,
+    'pH': float,
+    'sulphates': float,
+    'alcohol': float,
+    'quality': int  # Target
+}
+
+# Error log path
+ERROR_LOG_PATH = Path("/home/jovyan/data/etl_error_log.json")
+
+
+def validate_and_transform(chunk):
+    errors = []
+    processed_rows = []
+    for i, row in chunk.iterrows():
+        try:
+            row_dict = row.to_dict()
+            # Type check and conversion
+            for col, expected_type in EXPECTED_SCHEMA.items():
+                if pd.isnull(row_dict.get(col)):
+                    raise ValueError(f"Missing value in {col}")
+                row_dict[col] = expected_type(row_dict[col])
+
+            processed_rows.append(row_dict)
+        except Exception as e:
+            errors.append({"index": i, "error": str(e), "row": row.to_dict()})
+
+    return pd.DataFrame(processed_rows), errors
+
+
+
+
+class DataSource:
+    def get_batches(self):
+        raise NotImplementedError("Subclasses must implement get_batches")
+
+
+class CSVSource(DataSource):
+    def __init__(self, csv_path, chunk_size=100):
+        self.csv_path = Path(csv_path)
+        self.chunk_size = chunk_size
+
+    def get_batches(self):
+        return pd.read_csv(self.csv_path, chunksize=self.chunk_size)

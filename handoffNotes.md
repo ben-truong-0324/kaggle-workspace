@@ -6,6 +6,7 @@ This project is a modular ML experimentation environment built for structured da
 
 ## ✅ Current Work Focus
 
+- Added github CI, ETL added schema handling, error handling, datasource abstraction, srx/sink decoupling 1st step, added tests
 - mlflow needs sqlite storage for runs
 - xgboost also needs y labels normalized
 - Building a flexible model training loop that supports:
