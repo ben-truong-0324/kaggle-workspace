@@ -29,7 +29,8 @@ jobs:
 
     - name: Lint with flake8
       run: |
-        flake8 etl.py train.py models.py || true
+        flake8 utils || true
+
 
     - name: Run tests
       run: |
