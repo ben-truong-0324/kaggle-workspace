@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 import pandas as pd
 from utils.etl import CSVSource, validate_and_transform, detect_data_drift, EXPECTED_SCHEMA
 
