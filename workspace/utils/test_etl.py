@@ -1,5 +1,5 @@
 import pandas as pd
-from etl import CSVSource, validate_and_transform, detect_data_drift, EXPECTED_SCHEMA
+from utils.etl import CSVSource, validate_and_transform, detect_data_drift, EXPECTED_SCHEMA
 
 
 # === Unit Tests ===
