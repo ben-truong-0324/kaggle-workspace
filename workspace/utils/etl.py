@@ -132,10 +132,21 @@ def run_custom_etl(dataset_name: str, target_column: str, ) -> dict:
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
     etl_source = inspect.getsource(run_custom_etl)
     # Generate next UUID (v1, v2, etc.)
+    base_data_dir = Path("/home/jovyan/data") #default jupyter jovyan
+    dataset_specific_base_path = base_data_dir / dataset_name
+    store_path = dataset_specific_base_path / "etl_generated_store.json"
+    # Load existing store
+    if store_path.exists():
+        with open(store_path, "r") as f:
+            store = json.load(f)
+    else:
+        store = {}
+
     existing_versions = [int(k[1:]) for k in store.keys() if k.startswith("v") and k[1:].isdigit()]
     next_version_number = max(existing_versions, default=0) + 1
     uuid = f"v{next_version_number}"
     etl_description = "Custom ETL logic: normalize to 0-1 range for all features with sklearn.preprocessing.MinMaxScaler"
+    
     store[uuid] = {
         "etl_description": etl_description,
         "target_column": target_column,

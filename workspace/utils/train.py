@@ -16,16 +16,51 @@ import wandb
 from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 
+def conditionally_encode_labels(y_train, y_val):
+    """
+    Conditionally apply LabelEncoder to y_train and y_val
+    if class labels are not already 0-indexed and consecutive.
+
+    Returns:
+        y_train_encoded (pd.Series)
+        y_val_encoded (pd.Series)
+        label_encoder (LabelEncoder or None)
+        label_encoder_applied (bool)
+    """
+    y_labels_sorted = sorted(pd.Series(y_train).unique())
+    should_encode = y_labels_sorted[0] != 0 or y_labels_sorted != list(range(len(y_labels_sorted)))
+
+    if should_encode:
+        print("🔁 Applying LabelEncoder to remap class labels to [0...N-1]")
+        le = LabelEncoder()
+        y_train_encoded = pd.Series(le.fit_transform(y_train))
+        y_val_encoded = pd.Series(le.transform(y_val))
+        return y_train_encoded, y_val_encoded, le, True
+    else:
+        print("✅ Labels already normalized, no encoding needed")
+        return pd.Series(y_train), pd.Series(y_val), None, False
+
+
 def train_sklearn_model(model, X_train, y_train, X_val, y_val, task_type):
+    if task_type != "regression":
+        y_train, y_val_encoded, label_encoder, label_encoder_applied = conditionally_encode_labels(y_train, y_val)
+    else:
+        label_encoder_applied = False
+        label_encoder = None
+
     model.fit(X_train, y_train)
     y_pred = model.predict(X_val)
+
+    if label_encoder_applied:
+        y_pred = label_encoder.inverse_transform(y_pred)
+
     return model, y_pred
 
 
 def train_nn_model(
     model, X_train, y_train, X_val, y_val,
     epochs=10,
-    lr = lr,
+    lr = .005,
     task_type="classification",  # "binary_classification", "multiclass_classification", or "regression"
     eval_metric_name="val_metric",
     eval_metric_fn=None
@@ -38,6 +73,13 @@ def train_nn_model(
     # === Convert Inputs ===
     X_train = torch.tensor(X_train.values, dtype=torch.float32)
     X_val = torch.tensor(X_val.values, dtype=torch.float32)
+
+    if task_type != "regression":
+        y_train, y_val, label_encoder, label_encoder_applied = conditionally_encode_labels(y_train, y_val)
+    else:
+        label_encoder_applied = False
+        label_encoder = None
+
 
     if task_type == "regression":
         y_train = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1)
@@ -118,6 +160,8 @@ def train_nn_model(
 
         mlflow.log_metric("train_loss", epoch_loss, step=epoch)
         wandb.log({"train_loss": epoch_loss, "epoch": epoch})
+    if label_encoder_applied:
+        y_pred_np = label_encoder.inverse_transform(y_pred_np)
 
     return model, y_pred_np
 
@@ -242,28 +286,3 @@ def log_final_metrics(eval_metrics):
     wandb.log(flat_metrics)
 
 
-
-
-def conditionally_encode_labels(y_train, y_val):
-    """
-    Conditionally apply LabelEncoder to y_train and y_val
-    if class labels are not already 0-indexed and consecutive.
-
-    Returns:
-        y_train_encoded (pd.Series)
-        y_val_encoded (pd.Series)
-        label_encoder (LabelEncoder or None)
-        label_encoder_applied (bool)
-    """
-    y_labels_sorted = sorted(pd.Series(y_train).unique())
-    should_encode = y_labels_sorted[0] != 0 or y_labels_sorted != list(range(len(y_labels_sorted)))
-
-    if should_encode:
-        print("🔁 Applying LabelEncoder to remap class labels to [0...N-1]")
-        le = LabelEncoder()
-        y_train_encoded = pd.Series(le.fit_transform(y_train))
-        y_val_encoded = pd.Series(le.transform(y_val))
-        return y_train_encoded, y_val_encoded, le, True
-    else:
-        print("✅ Labels already normalized, no encoding needed")
-        return pd.Series(y_train), pd.Series(y_val), None, False

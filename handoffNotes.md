@@ -6,6 +6,7 @@ This project is a modular ML experimentation environment built for structured da
 
 ## ✅ Current Work Focus
 
+- xgboost also needs y labels normalized
 - Building a flexible model training loop that supports:
   - `sklearn` models (trees, boosting, linear)
   - `PyTorch` models (MLPs, CNNs, LSTMs)
