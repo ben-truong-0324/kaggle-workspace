@@ -1,4 +1,4 @@
-version: '3.8' # You can remove this line to get rid of the warning, but it doesn't hurt anything.
+version: '3.8'
 
 services:
   # Jupyter Notebook/Lab service
@@ -6,51 +6,63 @@ services:
     build: .
     container_name: kaggle_jupyter
     ports:
-      # Map host port 8888 to container port 8888 for Jupyter access
       - "8888:8888"
     volumes:
-      # Mount the local data directory to /home/jovyan/data in the container
-      # This is where you'll access your datasets
       - ./data:/home/jovyan/data
-      # Mount the local workspace directory to /home/jovyan/workspace in the container
-      # This is where you'll put your notebooks, code, outputs, etc.
       - ./workspace:/home/jovyan/workspace
-      # Mount the mlruns directory for MLflow artifact logging
       - ./mlruns:/home/jovyan/mlruns
-      # Mount the wandb directory for W&B run logging
       - ./wandb:/home/jovyan/wandb
-    working_dir: /home/jovyan/workspace # Set the default working directory
+    working_dir: /home/jovyan/workspace
     environment:
-      # Set the MLflow tracking URI to the mlflow service
       - MLFLOW_TRACKING_URI=http://mlflow:5000
-      # Set the W&B directory
       - WANDB_DIR=/home/jovyan/wandb
-      # Optional: Set a W&B API key if needed for advanced features, though local might not require it initially
-      # - WANDB_API_KEY=YOUR_WANDB_API_KEY
-      - JUPYTER_TOKEN=kaggle  # Set a fixed token
-    # Command to start Jupyter Lab directly
-    # --ip=0.0.0.0 makes it accessible from outside the container
-    # --port=8888 sets the port
-    # --no-browser prevents it from trying to open a browser inside the container
-    # --allow-root might be needed depending on the user the container runs as
-    # --token='' disables token authentication for easier local access (use with caution in non-local setups)
+      - JUPYTER_TOKEN=kaggle
     command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=kaggle
     networks:
       - kaggle_network
 
-  # MLflow Tracking Server service
+  # MLflow Tracking Server service with MySQL backend
   mlflow:
-    image: ghcr.io/mlflow/mlflow:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
     container_name: kaggle_mlflow
     ports:
       - "5001:5000"
     volumes:
       - ./mlruns:/home/mlflow/mlruns
-      - ./mlflow.db:/home/mlflow/mlflow.db
-    command: "mlflow ui --backend-store-uri sqlite:///home/mlflow/mlflow.db --default-artifact-root /home/mlflow/mlruns --host 0.0.0.0"
+    depends_on:
+      mlflow_mysql:
+        condition: service_healthy
+    command: >
+      mlflow ui
+      --backend-store-uri mysql+pymysql://mlflow:mlflow@mlflow_mysql:3306/mlflow
+      --default-artifact-root /home/mlflow/mlruns
+      --host 0.0.0.0
     networks:
       - kaggle_network
-  # MySQL service for W&B
+
+
+  # MySQL database for MLflow
+  mlflow_mysql:
+    image: mysql:8.0
+    container_name: mlflow_mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=mlflow_root
+      - MYSQL_DATABASE=mlflow
+      - MYSQL_USER=mlflow
+      - MYSQL_PASSWORD=mlflow
+    volumes:
+      - mlflow_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kaggle_network
+
+  # MySQL database for W&B
   mysql:
     image: mysql:5.7
     container_name: kaggle_mysql
@@ -70,7 +82,7 @@ services:
     networks:
       - kaggle_network
 
-  # Weights & Biases Local Server service
+  # Weights & Biases Local Server
   wandb:
     image: wandb/local:latest
     container_name: kaggle_wandb
@@ -84,7 +96,6 @@ services:
       - MYSQL_DATABASE=wandb_local
       - MYSQL_USER=wandb_local
       - MYSQL_PASSWORD=wandb_local
-      # Network configuration
       - HOST=http://localhost:8082
       - SERVER_ADDRESS=0.0.0.0
       - SERVER_PORT=8080
@@ -102,12 +113,13 @@ services:
     networks:
       - kaggle_network
 
-# Define a network for services to communicate
+# Networks for inter-service communication
 networks:
   kaggle_network:
     driver: bridge
 
-# Define volumes for persistence (though bind mounts are used above, named volumes could also be used)
+# Persistent volumes for databases and data storage
 volumes:
   mysql_data:
   wandb_data:
+  mlflow_mysql_data:

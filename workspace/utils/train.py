@@ -274,9 +274,9 @@ def log_final_metrics(eval_metrics):
             wandb.log({metric: value})
 
             # Log to MLflow as JSON artifact
-            with open(f"{metric}.json", "w") as f:
-                json.dump(value, f, indent=2)
-            mlflow.log_artifact(f"{metric}.json")
+            # with open(f"{metric}.json", "w") as f:
+            #     json.dump(value, f, indent=2)
+            # mlflow.log_artifact(f"{metric}.json")
 
         else:
             # fallback — log what you can

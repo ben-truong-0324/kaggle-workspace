@@ -3,6 +3,8 @@ from pathlib import Path
 import pandas as pd
 import shutil
 import inspect
+from sklearn.cluster import KMeans
+
 
 def run_default_etl(dataset_name: str, target_column: str, ) -> dict:
 
@@ -139,11 +141,58 @@ def get_raw_dataset(dataset_name, target_column):
 def run_custom_etl(dataset_name: str, target_column: str, ) -> dict:
     X, y = get_raw_dataset(dataset_name, target_column)
 
+    # === Create composite features ===
+    X["acid_index"] = (
+        X["fixed acidity"] + X["volatile acidity"] + X["citric acid"]
+    )
+    X["sugar_density_ratio"] = X["residual sugar"] / X["density"]
+    X["sulfur_ratio"] = X["free sulfur dioxide"] / X["total sulfur dioxide"].replace(0, 1e-3)
+    X["alcohol_pH_ratio"] = X["alcohol"] / X["pH"].replace(0, 1e-3)
+    X["sulphate_acid_ratio"] = X["sulphates"] / (X["volatile acidity"] + 1e-3)
+
+   
     from sklearn.preprocessing import MinMaxScaler
     # === Normalize features to 0–1 range ===
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X = pd.DataFrame(X_scaled, columns=X.columns)
+    X_scaled_df = pd.DataFrame(X_scaled, columns=X.columns)
+
+    # === Clustering ===
+    kmeans = KMeans(n_clusters=6, random_state=42)
+    X_scaled_df['kmeans_cluster'] = kmeans.fit_predict(X_scaled_df)
+
+    # # === PCA ===
+    # from sklearn.decomposition import PCA
+    # pca = PCA(n_components=7)
+    # X_pca = pca.fit_transform(X_scaled)
+    # for i in range(7):
+    #     X_scaled_df[f"pca_{i+1}"] = X_pca[:, i]
+    # X = X_scaled_df
+
+    # # === Isomap ===
+    # from sklearn.manifold import Isomap
+    # isomap = Isomap(n_components=7)
+    # X_iso = isomap.fit_transform(X_scaled)
+    # for i in range(X_iso.shape[1]):
+    #     X_scaled_df[f"isomap_{i+1}"] = X_iso[:, i]
+    # X = X_scaled_df
+
+    # # === UMAP ===
+    # import umap
+    # reducer = umap.UMAP(n_components=7, random_state=42)
+    # X_umap = reducer.fit_transform(X_scaled)
+    # for i in range(X_umap.shape[1]):
+    #     X_scaled_df[f"umap_{i+1}"] = X_umap[:, i]
+    # X = X_scaled_df
+
+    # === ICA ===
+    from sklearn.decomposition import FastICA
+    ica = FastICA(n_components=7, random_state=42)
+    X_ica = ica.fit_transform(X_scaled)
+    for i in range(X_ica.shape[1]):
+        X_scaled_df[f"ica_{i+1}"] = X_ica[:, i]
+    X = X_scaled_df
 
 
     # Basic example split
@@ -164,7 +213,7 @@ def run_custom_etl(dataset_name: str, target_column: str, ) -> dict:
     existing_versions = [int(k[1:]) for k in store.keys() if k.startswith("v") and k[1:].isdigit()]
     next_version_number = max(existing_versions, default=0) + 1
     uuid = f"v{next_version_number}"
-    etl_description = "Custom ETL logic: normalize to 0-1 range for all features with sklearn.preprocessing.MinMaxScaler"
+    etl_description = "composite features, MinMaxScaler 0-1, kmeans, ICA"
     
     store[uuid] = {
         "etl_description": etl_description,
