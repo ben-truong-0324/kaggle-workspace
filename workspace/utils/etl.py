@@ -330,7 +330,9 @@ def transform_raw_dataframe(df: pd.DataFrame, service_cols: list = None) -> pd.D
     df = df.copy()
 
     # Drop irrelevant
-    df = df.drop(columns=["PassengerId", "Name"], errors='ignore')
+    df = df.drop(columns=["PassengerId",
+                        #  "Name"
+                        ], errors='ignore')
 
     for col in ["CryoSleep", "VIP"]:
         if df[col].dtype == object:
@@ -428,6 +430,13 @@ def run_custom_etl(dataset_name: str, target_column: str, test_split: float = .2
 
 
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=test_split, random_state=42)
+
+    # Step 1: Learn from train set
+    word_stats = fit_name_word_correlations(X_train, y_train)
+
+    # Step 2: Transform each set
+    X_train = apply_name_word_features(X_train, word_stats)
+    X_val = apply_name_word_features(X_val, word_stats)
 
     scaler, ica, kmeans, gmm = fit_feature_generators(X_train)
 
@@ -574,3 +583,85 @@ def validate_y_schema(y, expected_dtype=None):
     if y.isnull().any():
         raise ValueError("❌ y contains null values.")
     print("✅ y schema valid.")
+
+
+
+def fit_name_word_correlations(X_train, y_train, column="Name", min_count=5):
+    import re
+    from collections import defaultdict
+    from scipy.stats import fisher_exact
+    import pandas as pd
+
+    def tokenize(text):
+        return re.findall(r"\b\w+\b", str(text).lower())
+
+    word_counts = defaultdict(lambda: [0, 0])  # word: [count_0, count_1]
+    token_map = {}  # index → token list
+
+    for i, (name, label) in enumerate(zip(X_train[column], y_train)):
+        tokens = tokenize(name)
+        token_map[i] = tokens
+        for token in set(tokens):
+            word_counts[token][label] += 1
+
+    # Total per class
+    total_0 = sum(y_train == 0)
+    total_1 = sum(y_train == 1)
+
+    # Compute stats
+    word_stats = {}
+    for word, (c0, c1) in word_counts.items():
+        total = c0 + c1
+        if total < min_count:
+            continue
+        rate = c1 / total
+        table = [[c1, c0], [total_1 - c1, total_0 - c0]]
+        _, p = fisher_exact(table)
+        word_stats[word] = {
+            "count_0": c0,
+            "count_1": c1,
+            "class1_rate": rate,
+            "p_value": p
+        }
+
+    return word_stats
+
+
+def apply_name_word_features(X, word_stats, column="Name"):
+    import re
+    import pandas as pd
+
+    def tokenize(text):
+        return re.findall(r"\b\w+\b", str(text).lower())
+
+    def get_best_stats(tokens):
+        best_pos = {"p": 1.0, "prob": 0.5}
+        best_neg = {"p": 1.0, "prob": 0.5}
+        for token in tokens:
+            stats = word_stats.get(token)
+            if not stats:
+                continue
+            if stats["class1_rate"] > 0.5 and stats["p_value"] < best_pos["p"]:
+                best_pos = {"p": stats["p_value"], "prob": stats["class1_rate"]}
+            elif stats["class1_rate"] < 0.5 and stats["p_value"] < best_neg["p"]:
+                best_neg = {"p": stats["p_value"], "prob": stats["class1_rate"]}
+        return best_pos["p"], best_pos["prob"], best_neg["p"], best_neg["prob"]
+
+    # Generate new columns
+    pos_p, pos_prob, neg_p, neg_prob = [], [], [], []
+
+    for name in X[column]:
+        tokens = tokenize(name)
+        p_pos, prob_pos, p_neg, prob_neg = get_best_stats(tokens)
+        pos_p.append(p_pos)
+        pos_prob.append(prob_pos)
+        neg_p.append(p_neg)
+        neg_prob.append(prob_neg)
+
+    X = X.copy()
+    X["name_corr_pos_p_value"] = pos_p
+    X["name_corr_pos_prob"] = pos_prob
+    X["name_corr_neg_p_value"] = neg_p
+    X["name_corr_neg_prob"] = neg_prob
+    X.drop(columns=[column], inplace=True)
+    return X

@@ -101,6 +101,7 @@ def evaluate_feature_feedback(
         display(feedback_df.head(10))
         print("\n🧹 Least Informative Features (below threshold):")
         print(best_result["dropped_features"])
+        display(feedback_df.tail(10))
 
     if show_model_perf:
         delta = best_result["score_after"] - score_before
