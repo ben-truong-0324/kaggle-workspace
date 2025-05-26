@@ -10,6 +10,7 @@ wandb/mysql/*
 mlruns/*
 **/submission.csv
 workspace/**/submission.csv
+**/*.npy
 # C extensions
 *.so
 data/
