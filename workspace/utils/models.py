@@ -1,4 +1,4 @@
-# scikit-learn classifiers
+# scikit-learn classifiers (for multiclass_classification task_type)
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -6,30 +6,82 @@ from sklearn.svm import SVC
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 
+# scikit-learn regressors (for prob_vector and regression task_type)
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression # For LogisticRegression's regressor equivalent if needed
+from sklearn.svm import SVR # Support Vector Regressor
+from sklearn.neighbors import KNeighborsRegressor
+
+# MultiOutput wrapper
+from sklearn.multioutput import MultiOutputRegressor
+
 # gradient boosting frameworks
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
+from xgboost import XGBClassifier, XGBRegressor # Import both
+from lightgbm import LGBMClassifier, LGBMRegressor # Import both
 
-def get_sklearn_model(name: str, **kwargs):
-    if name == "decision_tree":
-        return DecisionTreeClassifier(**kwargs)
-    elif name == "random_forest":
-        return RandomForestClassifier(**kwargs)
-    elif name == "logistic_regression":
-        return LogisticRegression(**kwargs)
-    elif name == "svm":
-        return SVC(**kwargs)
-    elif name == "naive_bayes":
-        return GaussianNB(**kwargs)
-    elif name == "knn":
-        return KNeighborsClassifier(**kwargs)
-    elif name == "xgboost":
-        return XGBClassifier(use_label_encoder=False, eval_metric="logloss", **kwargs)
-    elif name == "lightgbm":
-        return LGBMClassifier(**kwargs)
+
+def get_sklearn_model(name: str, task_type: str, **kwargs):
+    if task_type == "multiclass_classification":
+        # Classifiers for discrete class prediction
+        if name == "decision_tree":
+            return DecisionTreeClassifier(**kwargs)
+        elif name == "random_forest":
+            return RandomForestClassifier(**kwargs)
+        elif name == "logistic_regression":
+            # LogisticRegression is inherently a classifier. For multi-output
+            # continuous data, its regression equivalent is typically handled
+            # by LinearRegression wrapped in MultiOutputRegressor or not used.
+            # If you specifically need a classifier for this name, keep it here.
+            return LogisticRegression(**kwargs)
+        elif name == "svm":
+            return SVC(**kwargs)
+        elif name == "naive_bayes":
+            return GaussianNB(**kwargs)
+        elif name == "knn":
+            return KNeighborsClassifier(**kwargs)
+        elif name == "xgboost":
+            # For XGBoost classifier, ensure use_label_encoder=False for newer versions
+            return XGBClassifier(use_label_encoder=False, eval_metric="logloss", **kwargs)
+        elif name == "lightgbm":
+            return LGBMClassifier(**kwargs)
+        else:
+            raise ValueError(f"Unknown classifier model for 'multiclass_classification': {name}")
+
+    elif task_type == "prob_vector" or task_type == "regression":
+        # For 'prob_vector' (multi-output regression) or standard 'regression' (single-output)
+        # We need regressors, and for 'prob_vector', they should be wrapped in MultiOutputRegressor.
+
+        base_model = None
+
+        if name == "decision_tree":
+            base_model = DecisionTreeRegressor(**kwargs)
+        elif name == "random_forest":
+            base_model = RandomForestRegressor(**kwargs)
+        elif name == "logistic_regression":
+            # For 'prob_vector' or 'regression', LogisticRegression is not directly applicable.
+            # You might use LinearRegression as a simple base.
+            base_model = LinearRegression(**kwargs)
+        elif name == "svm":
+            base_model = SVR(**kwargs)
+        elif name == "knn":
+            base_model = KNeighborsRegressor(**kwargs)
+        elif name == "xgboost":
+            base_model = XGBRegressor(objective='reg:squarederror', **kwargs) # Standard regression objective
+        elif name == "lightgbm":
+            base_model = LGBMRegressor(**kwargs)
+        else:
+            raise ValueError(f"Unknown regressor model for '{task_type}' task: {name}")
+
+        # Wrap in MultiOutputRegressor if the task is 'prob_vector'
+        if task_type == "prob_vector":
+            return MultiOutputRegressor(estimator=base_model)
+        else: # This is for standard 'regression' (single output)
+            return base_model
+
     else:
-        raise ValueError(f"Unknown sklearn model: {name}")
-
+        raise ValueError(f"Unknown task_type: {task_type}")
+    
 def get_nn_model(input_dim: int, output_dim: int = 1, **kwargs):
     import torch.nn as nn
 
@@ -74,6 +126,7 @@ def get_nn_model(input_dim: int, output_dim: int = 1, **kwargs):
 
             # Output layer
             layers.append(nn.Linear(hidden, output_dim))
+            layers.append(nn.Softmax(dim=1))
             self.net = nn.Sequential(*layers)
 
         def forward(self, x):
@@ -91,22 +144,28 @@ def get_nn_model(input_dim: int, output_dim: int = 1, **kwargs):
                 nn.AdaptiveAvgPool1d(1)
             )
             self.fc = nn.Sequential(
-                nn.Linear(32, output_dim)
+                nn.Linear(32, output_dim),
+                nn.Softmax(dim=1)
             )
 
         def forward(self, x):
-            x = x.unsqueeze(1)
-            x = self.conv(x).squeeze(-1)
+            # Ensure x has shape (batch_size, 1, input_dim) for Conv1d
+            if x.dim() == 2: # if input is (batch_size, input_dim)
+                 x = x.unsqueeze(1) # Add channel dimension
+            x = self.conv(x).squeeze(-1) # Squeeze the last dimension (from AdaptiveAvgPool1d)
             return self.fc(x)
-
+        
     class LSTMNet(nn.Module):
         def __init__(self):
             super().__init__()
             self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden, batch_first=True)
-            self.fc = nn.Linear(hidden, output_dim)
+            self.fc = nn.Sequential(
+                nn.Linear(hidden, output_dim),
+                nn.Softmax(dim=1) 
+            )
+
 
         def forward(self, x):
-            x = x.unsqueeze(1)
             _, (hn, _) = self.lstm(x)
             return self.fc(hn[-1])
 

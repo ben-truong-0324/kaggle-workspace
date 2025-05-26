@@ -4,6 +4,10 @@ import random
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from sklearn.metrics import accuracy_score, r2_score
+import sklearn.metrics
+from scipy.stats import entropy
+from scipy.spatial.distance import jensenshannon
+from scipy.stats import wasserstein_distance
 import xgboost as xgb 
 
 def evaluate_feature_feedback(
@@ -179,3 +183,201 @@ def display_system_memory_info(context_message="Current system memory"):
         print("--------------------------------------")
     else:
         pass
+
+
+
+def kl_divergence(y_true, y_pred):
+    # Add small epsilon to avoid log(0)
+    eps = 1e-9
+    # Ensure inputs are numpy arrays
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    # Normalize and clip
+    y_true = np.clip(y_true / np.sum(y_true, axis=1, keepdims=True), eps, 1 - eps)
+    y_pred = np.clip(y_pred / np.sum(y_pred, axis=1, keepdims=True), eps, 1 - eps)
+    return np.mean([entropy(y_t, y_p) for y_t, y_p in zip(y_true, y_pred)])
+
+def js_divergence(y_true, y_pred):
+    # Jensen-Shannon is symmetric and bounded
+    eps = 1e-9
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    y_true = np.clip(y_true / np.sum(y_true, axis=1, keepdims=True), eps, 1 - eps)
+    y_pred = np.clip(y_pred / np.sum(y_pred, axis=1, keepdims=True), eps, 1 - eps)
+    return np.mean([jensenshannon(y_t, y_p) ** 2 for y_t, y_p in zip(y_true, y_pred)])  # squared = actual JS div
+
+def cross_entropy_loss(y_true, y_pred):
+    # Add small epsilon to avoid log(0)
+    eps = 1e-9
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    y_pred = np.clip(y_pred / np.sum(y_pred, axis=1, keepdims=True), eps, 1 - eps) # Ensure y_pred is normalized and clipped
+    return -np.mean([np.sum(y_t * np.log(y_p)) for y_t, y_p in zip(y_true, y_pred)])
+
+def l2_loss(y_true, y_pred):
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    return np.mean([np.sum((y_t - y_p) ** 2) for y_t, y_p in zip(y_true, y_pred)])
+
+def l1_loss(y_true, y_pred):
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    return np.mean([np.sum(np.abs(y_t - y_p)) for y_t, y_p in zip(y_true, y_pred)])
+
+def earth_movers_distance(y_true, y_pred, bin_centers=None):
+    # This expects true and pred to be [n_samples, n_bins], and bin_centers to be [n_bins]
+    if bin_centers is None:
+        raise ValueError("Must provide bin_centers for Earth Mover's Distance when task_type is 'prob_vector'.")
+    # Ensure inputs are numpy arrays
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    # Normalize distributions for EMD
+    y_true = y_true / np.sum(y_true, axis=1, keepdims=True)
+    y_pred = y_pred / np.sum(y_pred, axis=1, keepdims=True)
+
+    emds = []
+    for yt, yp in zip(y_true, y_pred):
+        emds.append(wasserstein_distance(bin_centers, bin_centers, u_weights=yt, v_weights=yp))
+    return np.mean(emds)
+
+# Map of string -> (metric name, metric function)
+# Note: EMD needs bin_centers, so its function call will be handled specially
+metric_lookup = {
+    "kl_divergence": ("KL Divergence", kl_divergence),
+    "js_divergence": ("Jensen-Shannon Divergence", js_divergence),
+    "cross_entropy": ("Cross-Entropy", cross_entropy_loss),
+    "l2": ("L2 Loss", l2_loss),
+    "l1": ("L1 Loss", l1_loss),
+    "earth_movers_distance": ("Earth Mover's Distance", earth_movers_distance), # Added EMD
+}
+
+
+def evaluate_model(y_true, y_pred, task_type, eval_metric_name=None, eval_metric_fn=None, bin_centers=None):
+    """
+    Evaluates a model's predictions against true values based on the task type.
+
+    Args:
+        y_true (array-like): True target values.
+        y_pred (array-like): Predicted target values.
+        task_type (str): Type of machine learning task
+                         ("binary_classification", "multiclass_classification",
+                          "regression", "prob_vector").
+        eval_metric_name (str, optional): Name of the custom evaluation metric.
+                                          Required for "prob_vector" task_type.
+        eval_metric_fn (callable, optional): Custom evaluation metric function.
+                                            Required for "prob_vector" task_type.
+        bin_centers (array-like, optional): Centers of the bins, required for
+                                            "earth_movers_distance" metric in "prob_vector" task.
+
+    Returns:
+        dict: A dictionary of evaluation metrics.
+    """
+    from sklearn.metrics import (
+        accuracy_score, precision_score, recall_score, f1_score,
+        roc_auc_score, confusion_matrix, classification_report,
+        mean_absolute_error, mean_squared_error, r2_score
+    )
+
+    metrics = {}
+
+    if task_type in ["binary_classification", "multiclass_classification"]:
+        # Ensure y_pred is in the correct format (e.g., class labels, not probabilities)
+        # if the model output probabilities, you might need to convert them to class labels
+        # e.g., y_pred_labels = np.argmax(y_pred_probs, axis=1) if y_pred is probabilities
+        # For simplicity, assuming y_pred here are already class labels.
+
+        metrics["accuracy"] = accuracy_score(y_true, y_pred)
+        metrics["precision_weighted"] = precision_score(y_true, y_pred, average="weighted", zero_division=0)
+        metrics["recall_weighted"] = recall_score(y_true, y_pred, average="weighted", zero_division=0)
+        metrics["f1_weighted"] = f1_score(y_true, y_pred, average="weighted", zero_division=0)
+        metrics["f1_macro"] = f1_score(y_true, y_pred, average="macro", zero_division=0)
+
+        # ROC AUC only for binary
+        if len(np.unique(y_true)) == 2:
+            try:
+                # For ROC AUC, y_pred should be probabilities for the positive class
+                # If y_pred is class labels, this will likely fail or give misleading results.
+                # Assuming y_pred is already probabilities if this is intended.
+                metrics["roc_auc"] = roc_auc_score(y_true, y_pred)
+            except ValueError: # Catch error if y_pred is not probabilities
+                metrics["roc_auc"] = None
+                print("Warning: ROC AUC requires probability estimates for binary classification.")
+
+        # Confusion matrix
+        cm = confusion_matrix(y_true, y_pred)
+        metrics["confusion_matrix"] = cm.tolist()
+
+        # Per-class metrics
+        class_report = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
+        class_metrics = {
+            label: {
+                "precision": round(values["precision"], 3),
+                "recall": round(values["recall"], 3),
+                "f1": round(values["f1-score"], 3),
+                "support": int(values["support"]),
+            }
+            for label, values in class_report.items()
+            if label not in ["accuracy", "macro avg", "weighted avg"] # Exclude overall metrics
+        }
+        metrics["per_class_metrics"] = class_metrics
+
+    elif task_type == "regression":
+        metrics["mae"] = mean_absolute_error(y_true, y_pred)
+        metrics["mse"] = mean_squared_error(y_true, y_pred)
+        metrics["rmse"] = mean_squared_error(y_true, y_pred, squared=False)
+        metrics["r2"] = r2_score(y_true, y_pred)
+
+        # === Bin target into quantiles and evaluate per bin
+        # Ensure y_true is a Series for pd.qcut
+        if not isinstance(y_true, pd.Series):
+            y_true_series = pd.Series(y_true)
+        else:
+            y_true_series = y_true
+
+        bins = pd.qcut(y_true_series, q=5, duplicates='drop')
+        bin_df = pd.DataFrame({
+            "y_true": y_true,
+            "y_pred": y_pred,
+            "bin": bins
+        })
+        bin_stats = bin_df.groupby("bin").apply(
+            lambda df: {
+                "mae": mean_absolute_error(df["y_true"], df["y_pred"]),
+                "rmse": mean_squared_error(df["y_true"], df["y_pred"], squared=False),
+                "count": len(df)
+            }
+        )
+        metrics["binned_performance"] = {str(k): v for k, v in bin_stats.to_dict().items()}
+
+    elif task_type == "prob_vector":
+        if eval_metric_fn is None or eval_metric_name is None:
+            raise ValueError(
+                "For 'prob_vector' task_type, 'eval_metric_fn' and 'eval_metric_name' "
+                "must be provided to evaluate_model."
+            )
+
+        # Ensure y_true and y_pred are numpy arrays for consistency with metric functions
+        y_true_np = np.asarray(y_true)
+        y_pred_np = np.asarray(y_pred)
+
+        # Handle Earth Mover's Distance specifically as it requires bin_centers
+        if eval_metric_name == "Earth Mover's Distance":
+            if bin_centers is None:
+                raise ValueError(
+                    "For 'Earth Mover's Distance' metric, 'bin_centers' must be provided "
+                    "to evaluate_model when task_type is 'prob_vector'."
+                )
+            metrics[eval_metric_name.lower().replace(' ', '_')] = eval_metric_fn(y_true_np, y_pred_np, bin_centers=bin_centers)
+        else:
+            metrics[eval_metric_name.lower().replace(' ', '_')] = eval_metric_fn(y_true_np, y_pred_np)
+
+        # Optionally, you might want to include L1/L2 as general distance metrics
+        # even if not the primary eval_metric_fn
+        metrics["l1_loss_overall"] = l1_loss(y_true_np, y_pred_np)
+        metrics["l2_loss_overall"] = l2_loss(y_true_np, y_pred_np)
+
+
+    else:
+        raise ValueError(f"Unsupported task_type: {task_type}")
+
+    return metrics
