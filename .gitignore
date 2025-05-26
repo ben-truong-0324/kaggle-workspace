@@ -11,6 +11,9 @@ mlruns/*
 **/submission.csv
 workspace/**/submission.csv
 **/*.npy
+wandb/
+*.bin
+.minio.sys/
 # C extensions
 *.so
 data/
