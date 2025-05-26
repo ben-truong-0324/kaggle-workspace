@@ -4,6 +4,7 @@ import random
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from sklearn.metrics import accuracy_score, r2_score
+import xgboost as xgb 
 
 def evaluate_feature_feedback(
     X_train,
@@ -31,15 +32,47 @@ def evaluate_feature_feedback(
     """
     is_regression = pd.api.types.is_numeric_dtype(y_train) and y_train.nunique() > 10
     Model = RandomForestRegressor if is_regression else RandomForestClassifier
+    XGB_Model = xgb.XGBRegressor if is_regression else xgb.XGBClassifier 
+
     metric_func = r2_score if is_regression else accuracy_score
     metric_name = "R²" if is_regression else "Accuracy"
 
     # Initial model
-    rf = Model(n_estimators=100, random_state=42)
+    rf = Model(n_estimators=200, random_state=42)
     rf.fit(X_train, y_train)
     y_pred = rf.predict(X_val)
     score_before = metric_func(y_val, y_pred)
     print(f"✅ RandomForest {metric_name} (original): {score_before:.4f}")
+
+    # 2. XGBoost Model
+    print("\n--- XGBoost ---")
+    xgb_eval_metric = 'rmse' if is_regression else 'logloss'
+    if not is_regression and len(y_train.unique()) > 2: # Check if multi-class classification
+        xgb_eval_metric = 'mlogloss'
+
+    xgb_model_instance = XGB_Model(
+        n_estimators=100,
+        random_state=42,
+        eval_metric=xgb_eval_metric,
+        n_jobs=-1 
+    )
+    y_train_xgb = y_train.astype(int) if y_train.dtype == 'bool' else y_train
+    y_val_xgb = y_val.astype(int) if y_val.dtype == 'bool' else y_val
+    try:
+        xgb_model_instance.fit(X_train, y_train_xgb) # Use y_train_xgb
+        y_pred_xgb_proba = None
+        if not is_regression:
+            y_pred_xgb_proba = xgb_model_instance.predict_proba(X_val) # Get probabilities for more detailed eval if needed
+        y_pred_xgb = xgb_model_instance.predict(X_val)
+        score_xgb = metric_func(y_val_xgb, y_pred_xgb) # Use y_val_xgb
+        print(f"✅ XGBoost {metric_name}: {score_xgb:.4f}")
+    except xgb.core.XGBoostError as e:
+        print(f"❌ XGBoost Error: {e}")
+        print("   This might be due to string labels in y_train for classification. Ensure y_train is numerically encoded (0 to n_classes-1).")
+        print(f"   y_train unique values: {y_train.unique()}")
+    except Exception as e:
+        print(f"❌ An unexpected error occurred with XGBoost: {e}")
+
 
     # Feature stats
     feature_names = X_train.columns
@@ -121,3 +154,28 @@ def evaluate_feature_feedback(
         "model_score_after": best_result["score_after"],
         "drop_threshold": drop_threshold
     }
+
+
+
+def display_system_memory_info(context_message="Current system memory"):
+    try:
+        import psutil
+        PSUTIL_AVAILABLE = True
+    except ImportError:
+        PSUTIL_AVAILABLE = False
+        print("INFO: `psutil` library not found. Cannot display current available system memory.")
+        print("run: pip install psutil")
+        print("-" * 30)
+    if PSUTIL_AVAILABLE:
+        mem_info = psutil.virtual_memory()
+        available_memory_mb = mem_info.available / (1024 * 1024)
+        available_memory_gb = available_memory_mb / 1024
+        total_memory_mb = mem_info.total / (1024 * 1024)
+        total_memory_gb = total_memory_mb / 1024
+        print(f"\n--- {context_message} ---")
+        print(f"  System Total RAM:     {total_memory_mb:.2f} MB ({total_memory_gb:.2f} GB)")
+        print(f"  System Available RAM: {available_memory_mb:.2f} MB ({available_memory_gb:.2f} GB)")
+        print(f"  System RAM Used (%):  {mem_info.percent}%")
+        print("--------------------------------------")
+    else:
+        pass

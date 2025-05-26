@@ -179,105 +179,108 @@ def feature_eda_vis(X, y, task_type):
     print("📊 Feature Statistics:")
     # === Feature Diagnostics ===
     for col in X.columns:
-        
-        feature = X[col]
-        if feature.dtype.kind in "bifc" and feature.notnull().sum() > 0:  # skip text or empty
-            if feature.dtype == bool:
-                feature = feature.astype(int)
-            
-            # Create side-by-side plots
-            fig, axes = plt.subplots(1, 3, figsize=(18, 4))
-
-            # Plot 1: Histogram
-            sns.histplot(feature, kde=True, bins=20, ax=axes[0])
-            axes[0].set_title(f"Histogram: {col}")
-            axes[0].set_xlabel(col)
-
-            # Plot 2: y vs. feature (boxplot or scatter depending on feature type)
-            x_binned = pd.cut(feature, bins=10) if feature.nunique() > 10 else feature
-
-            # For classification: show frequency of target class per bin
-            if "classification" in task_type:
-                heatmap_data = pd.crosstab(x_binned, y)
-                heatmap_data.columns = [str(col) for col in heatmap_data.columns]  # Clean column names
+        try:
+            feature = X[col]
+            if feature.dtype.kind in "bifc" and feature.notnull().sum() > 0:  # skip text or empty
+                if feature.dtype == bool:
+                    feature = feature.astype(int)
                 
-            else:
-                y_binned_raw = pd.qcut(y, q=5, duplicates="drop")
-                if y_binned_raw.nunique() <= 1:
-                    y_binned_raw = pd.cut(y, bins=5)
-                y_binned = y_binned_raw.astype("category").cat.codes
-                heatmap_data = pd.crosstab(x_binned, y_binned)
-                heatmap_data.columns = [str(col) for col in heatmap_data.columns]
+                # Create side-by-side plots
+                fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+
+                # Plot 1: Histogram
+                sns.histplot(feature, kde=True, bins=20, ax=axes[0])
+                axes[0].set_title(f"Histogram: {col}")
+                axes[0].set_xlabel(col)
+
+                # Plot 2: y vs. feature (boxplot or scatter depending on feature type)
+                x_binned = pd.cut(feature, bins=10) if feature.nunique() > 10 else feature
+
+                # For classification: show frequency of target class per bin
+                if "classification" in task_type:
+                    heatmap_data = pd.crosstab(x_binned, y)
+                    heatmap_data.columns = [str(col) for col in heatmap_data.columns]  # Clean column names
+                    
+                else:
+                    y_binned_raw = pd.qcut(y, q=5, duplicates="drop")
+                    if y_binned_raw.nunique() <= 1:
+                        y_binned_raw = pd.cut(y, bins=5)
+                    y_binned = y_binned_raw.astype("category").cat.codes
+                    heatmap_data = pd.crosstab(x_binned, y_binned)
+                    heatmap_data.columns = [str(col) for col in heatmap_data.columns]
 
 
-            sns.heatmap(heatmap_data, cmap="viridis", annot=True, fmt="d", ax=axes[1])
-            axes[1].set_title(f"Heatmap: {col} vs Target")
-            axes[1].set_xlabel("Target" if task_type == "classification" else "Binned Target")
-            axes[1].set_ylabel(f"{col} Bins")
+                sns.heatmap(heatmap_data, cmap="viridis", annot=True, fmt="d", ax=axes[1])
+                axes[1].set_title(f"Heatmap: {col} vs Target")
+                axes[1].set_xlabel("Target" if task_type == "classification" else "Binned Target")
+                axes[1].set_ylabel(f"{col} Bins")
 
-            # Plot 3: Deviation from 50% for classification
-            if "classification" in task_type:
-                target_true = y == 1  # assumes binary target
-                df_temp = pd.DataFrame({col: x_binned, "target": target_true})
-                bin_stats = df_temp.groupby(col)["target"].agg(["count", "sum"])
-                bin_stats["rate"] = bin_stats["sum"] / bin_stats["count"]
-                bin_stats["deviation"] = (bin_stats["rate"] / 0.5) * 100 - 100
+                # Plot 3: Deviation from 50% for classification
+                if "classification" in task_type:
+                    target_true = y == 1  # assumes binary target
+                    df_temp = pd.DataFrame({col: x_binned, "target": target_true})
+                    bin_stats = df_temp.groupby(col)["target"].agg(["count", "sum"])
+                    bin_stats["rate"] = bin_stats["sum"] / bin_stats["count"]
+                    bin_stats["deviation"] = (bin_stats["rate"] / 0.5) * 100 - 100
 
-                deviations = bin_stats["deviation"]
-                # colors = plt.cm.seismic((deviations - deviations.min()) / (deviations.max() - deviations.min()))
-                deviation_vals = deviations.to_numpy(dtype=float)  # ensure numeric
-                normed = (deviation_vals - deviation_vals.min()) / (deviation_vals.max() - deviation_vals.min() + 1e-8)
-                colors = plt.cm.seismic(normed)
-                axes[2].bar(bin_stats.index.astype(str), deviations, color=colors)
+                    deviations = bin_stats["deviation"]
+                    # colors = plt.cm.seismic((deviations - deviations.min()) / (deviations.max() - deviations.min()))
+                    deviation_vals = deviations.to_numpy(dtype=float)  # ensure numeric
+                    normed = (deviation_vals - deviation_vals.min()) / (deviation_vals.max() - deviation_vals.min() + 1e-8)
+                    colors = plt.cm.seismic(normed)
+                    axes[2].bar(bin_stats.index.astype(str), deviations, color=colors)
 
-                # bin_stats["deviation"].plot(kind="bar", ax=axes[2])
+                    # bin_stats["deviation"].plot(kind="bar", ax=axes[2])
 
-                axes[2].set_title(f"Deviation from 50% True Rate\n({col})")
-                axes[2].set_ylabel("Deviation (%)")
-                axes[2].axhline(0, color="gray", linestyle="--")
-                axes[2].tick_params(axis='x', rotation=45)
-            else:
-                axes[2].set_visible(False)
+                    axes[2].set_title(f"Deviation from 50% True Rate\n({col})")
+                    axes[2].set_ylabel("Deviation (%)")
+                    axes[2].axhline(0, color="gray", linestyle="--")
+                    axes[2].tick_params(axis='x', rotation=45)
+                else:
+                    axes[2].set_visible(False)
 
-            plt.tight_layout()
-            plt.show()
+                plt.tight_layout()
+                plt.show()
 
-            mean = feature.mean()
-            std = feature.std()
-            skewness = skew(feature.dropna())
-            kurt = kurtosis(feature.dropna())
-            min_val, max_val = feature.min(), feature.max()
-            zero_variance = np.isclose(std, 0.0)
+                mean = feature.mean()
+                std = feature.std()
+                skewness = skew(feature.dropna())
+                kurt = kurtosis(feature.dropna())
+                min_val, max_val = feature.min(), feature.max()
+                zero_variance = np.isclose(std, 0.0)
 
-            # Correlation with target
-            try:
-                target_corr = np.corrcoef(feature, y)[0, 1]
-            except Exception:
-                target_corr = float("nan")
+                # Correlation with target
+                try:
+                    target_corr = np.corrcoef(feature, y)[0, 1]
+                except Exception:
+                    target_corr = float("nan")
 
-            # Max correlation with other features
-            corr_with_others = X.corr()[col].drop(col)
-            most_corr_feat = corr_with_others.abs().idxmax()
-            most_corr_val = corr_with_others[most_corr_feat]
+                # Max correlation with other features
+                corr_with_others = X.corr()[col].drop(col)
+                most_corr_feat = corr_with_others.abs().idxmax()
+                most_corr_val = corr_with_others[most_corr_feat]
 
-            # === Preprocessing Suggestions ===
-            suggestions = []
-            if zero_variance:
-                suggestions.append("🔻 Drop (zero variance)")
-            elif std > 50 or abs(mean) > 100 or max_val - min_val > 100:
-                suggestions.append("🔄 Normalize (high range)")
-            if abs(skewness) > 1 or abs(kurt) > 3:
-                suggestions.append("🌀 Transform (non-Gaussian)")
-            if feature.dtype == "object" or feature.nunique() < 10:
-                suggestions.append("📦 Encode (categorical or discrete)")
-            if abs(target_corr) < 0.05:
-                suggestions.append("🤔 Low correlation with target")
+                # === Preprocessing Suggestions ===
+                suggestions = []
+                if zero_variance:
+                    suggestions.append("🔻 Drop (zero variance)")
+                elif std > 50 or abs(mean) > 100 or max_val - min_val > 100:
+                    suggestions.append("🔄 Normalize (high range)")
+                if abs(skewness) > 1 or abs(kurt) > 3:
+                    suggestions.append("🌀 Transform (non-Gaussian)")
+                if feature.dtype == "object" or feature.nunique() < 10:
+                    suggestions.append("📦 Encode (categorical or discrete)")
+                if abs(target_corr) < 0.05:
+                    suggestions.append("🤔 Low correlation with target")
 
-            print(f"📈 {col} Stats:")
-            print(f"  Mean: {mean:.3f}, Std: {std:.3f}, Skew: {skewness:.3f}, Kurtosis: {kurt:.3f}")
-            print(f"  Correlation with target: {target_corr:.3f}")
-            print(f"  Most correlated with: {most_corr_feat} ({most_corr_val:.3f})")
-            print(f"🔧 Suggestions: {' | '.join(suggestions) if suggestions else '✅ None'}\n")
+                print(f"📈 {col} Stats:")
+                print(f"  Mean: {mean:.3f}, Std: {std:.3f}, Skew: {skewness:.3f}, Kurtosis: {kurt:.3f}")
+                print(f"  Correlation with target: {target_corr:.3f}")
+                print(f"  Most correlated with: {most_corr_feat} ({most_corr_val:.3f})")
+                print(f"🔧 Suggestions: {' | '.join(suggestions) if suggestions else '✅ None'}\n")
+        except Exception as e:
+            print(e)
+            pass
 
     # === Feature Correlation Heatmap ===
     plt.figure(figsize=(12, 8))

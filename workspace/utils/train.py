@@ -15,6 +15,7 @@ import wandb
 
 from sklearn.preprocessing import LabelEncoder
 import pandas as pd
+import numpy as np
 
 def conditionally_encode_labels(y_train, y_val):
     """
@@ -42,18 +43,19 @@ def conditionally_encode_labels(y_train, y_val):
 
 
 def train_sklearn_model(model, X_train, y_train, X_val, y_val, task_type):
-    if task_type != "regression":
-        y_train, y_val_encoded, label_encoder, label_encoder_applied = conditionally_encode_labels(y_train, y_val)
-    else:
-        label_encoder_applied = False
-        label_encoder = None
+    if task_type not in ("regression", "multioutput_regression", "prob_vector"):
+        raise ValueError("Only regression/probability-vector/multioutput tasks supported in this template.")
 
+    # Fit model directly (no encoding needed)
     model.fit(X_train, y_train)
     y_pred = model.predict(X_val)
 
-    if label_encoder_applied:
-        y_pred = label_encoder.inverse_transform(y_pred)
+    # Optionally, ensure output is 2D (n_samples, n_bins)
+    if y_pred.ndim == 1:
+        y_pred = y_pred.reshape(-1, 1)
 
+    y_pred = np.clip(y_pred, 0, None)
+    y_pred = y_pred / (y_pred.sum(axis=1, keepdims=True) + 1e-9)
     return model, y_pred
 
 
@@ -173,8 +175,7 @@ def evaluate_model(y_true, y_pred, task_type):
         roc_auc_score, confusion_matrix, classification_report,
         mean_absolute_error, mean_squared_error, r2_score
     )
-    import numpy as np
-    import pandas as pd
+    
 
     metrics = {}
 

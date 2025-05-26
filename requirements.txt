@@ -16,5 +16,7 @@ pytest
 # pytest-cov      
 flake8   
 
-# plotly         #3D interactivity
-# umap-learn     # advanced manifold learning
+yfinance 
+pandas_datareader
+plotly         
+umap-learn     
