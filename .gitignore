@@ -8,6 +8,8 @@ wandb/wandb/*
 wandb/storage/*
 wandb/mysql/*
 mlruns/*
+**/submission.csv
+workspace/**/submission.csv
 # C extensions
 *.so
 data/
