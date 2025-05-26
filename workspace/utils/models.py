@@ -126,7 +126,7 @@ def get_nn_model(input_dim: int, output_dim: int = 1, **kwargs):
 
             # Output layer
             layers.append(nn.Linear(hidden, output_dim))
-            layers.append(nn.Softmax(dim=1))
+            # layers.append(nn.Softmax(dim=1))
             self.net = nn.Sequential(*layers)
 
         def forward(self, x):
@@ -145,7 +145,7 @@ def get_nn_model(input_dim: int, output_dim: int = 1, **kwargs):
             )
             self.fc = nn.Sequential(
                 nn.Linear(32, output_dim),
-                nn.Softmax(dim=1)
+                # nn.Softmax(dim=1)
             )
 
         def forward(self, x):
@@ -161,11 +161,12 @@ def get_nn_model(input_dim: int, output_dim: int = 1, **kwargs):
             self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden, batch_first=True)
             self.fc = nn.Sequential(
                 nn.Linear(hidden, output_dim),
-                nn.Softmax(dim=1) 
+                # nn.Softmax(dim=1) 
             )
 
 
         def forward(self, x):
+            x = x.unsqueeze(1)
             _, (hn, _) = self.lstm(x)
             return self.fc(hn[-1])
 

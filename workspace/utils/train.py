@@ -16,7 +16,7 @@ import wandb
 from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 import numpy as np
-
+import torch.nn.functional as F
 def conditionally_encode_labels(y_train, y_val):
     """
     Conditionally apply LabelEncoder to y_train and y_val
@@ -63,13 +63,14 @@ def train_nn_model(
     model, X_train, y_train, X_val, y_val,
     epochs=10,
     lr = .005,
-    task_type="classification",  # "binary_classification", "multiclass_classification", "regression", "prob_vector"
+    task_type="classification",
     eval_metric_name="val_metric",
     eval_metric_fn=None,
-    bin_centers=None # Added for Earth Mover's Distance
+    bin_centers=None,
+    patience=5
 ):
     """
-    Trains a neural network model.
+    Trains a neural network model with early stopping.
 
     Args:
         model (torch.nn.Module): The neural network model to train.
@@ -83,6 +84,7 @@ def train_nn_model(
         eval_metric_name (str): Name of the evaluation metric for logging.
         eval_metric_fn (callable): Custom evaluation metric function.
         bin_centers (np.ndarray, optional): Bin centers, required for EMD in prob_vector.
+        patience (int): Number of epochs to wait for improvement before stopping.
 
     Returns:
         tuple: (trained_model, y_pred_val_numpy)
@@ -97,21 +99,21 @@ def train_nn_model(
 
     # Determine criterion (loss function) and y_tensor dtype based on task_type
     if task_type == "regression":
-        y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1)
-        y_val_tensor = torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1)
+        y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1).to(device)
+        y_val_tensor = torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1).to(device)
         criterion = nn.MSELoss()
     elif task_type == "binary_classification":
-        y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1)
-        y_val_tensor = torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1)
-        criterion = nn.BCEWithLogitsLoss() # Expects raw logits
+        y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1).to(device)
+        y_val_tensor = torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1).to(device)
+        criterion = nn.BCEWithLogitsLoss()
     elif task_type == "multiclass_classification":
-        y_train_tensor = torch.tensor(y_train.values, dtype=torch.long)
-        y_val_tensor = torch.tensor(y_val.values, dtype=torch.long)
-        criterion = nn.CrossEntropyLoss() # Expects raw logits (no softmax in model)
+        y_train_tensor = torch.tensor(y_train.values, dtype=torch.long).to(device)
+        y_val_tensor = torch.tensor(y_val.values, dtype=torch.long).to(device)
+        criterion = nn.CrossEntropyLoss()
     elif task_type == "prob_vector":
         y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).to(device)
         y_val_tensor = torch.tensor(y_val.values, dtype=torch.float32).to(device)
-        criterion = nn.KLDivLoss(reduction='batchmean') # 'batchmean' averages loss over the batch
+        criterion = nn.KLDivLoss(reduction='batchmean')
     else:
         raise ValueError(f"Unsupported task_type: {task_type}")
 
@@ -119,17 +121,28 @@ def train_nn_model(
     train_loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor), batch_size=32, shuffle=True)
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
+    # --- Early Stopping Variables ---
+    best_val_score = float('inf') if (eval_metric_fn is None or eval_metric_name in ["KL Divergence", "Jensen-Shannon Divergence", "Cross-Entropy", "L1 Loss", "L2 Loss", "Earth Mover's Distance"]) else float('-inf')
+    # If eval_metric_fn is a "loss" (lower is better), we want to minimize it.
+    # If eval_metric_fn is a "score" (higher is better, like accuracy), we want to maximize it.
+    # We default to minimizing loss, as your primary metrics (KL, JS, CE, L1, L2, EMD) are losses.
+    # If you introduce an accuracy-like metric, adjust `best_val_score` init and comparison.
+    epochs_no_improve = 0
+    best_model_state = None # To save the best model state_dict
+
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
 
         for xb, yb in train_loader:
             preds = model(xb)
-            # Adjust preds for loss function based on task_type
+
             if task_type == "prob_vector":
-                # KLDivLoss expects log-probabilities for input
-                loss = criterion(torch.log(preds), yb)
-            else:
+                log_probs = F.log_softmax(preds, dim=1)
+                loss = criterion(log_probs, yb)
+            elif task_type in ["binary_classification", "multiclass_classification"]:
+                loss = criterion(preds, yb) # These criteria expect raw logits
+            else: # Regression
                 loss = criterion(preds, yb)
 
             optimizer.zero_grad()
@@ -143,67 +156,115 @@ def train_nn_model(
         with torch.no_grad():
             val_preds_raw = model(X_val_tensor)
 
-            # Convert predictions and true values to NumPy for evaluation
-            # The format of y_pred_np and y_true_np depends on the task_type
+            # Convert predictions and true values to NumPy for evaluation on CPU
             if task_type == "regression":
                 y_pred_np = val_preds_raw.cpu().numpy().squeeze()
                 y_true_np = y_val_tensor.cpu().numpy().squeeze()
             elif task_type == "binary_classification":
-                # For eval metrics, we need probabilities or hard labels
                 y_pred_probs_np = torch.sigmoid(val_preds_raw).cpu().numpy().squeeze()
-                y_pred_np = (y_pred_probs_np > 0.5).astype(int) # Hard labels for classification metrics
+                y_pred_np = (y_pred_probs_np > 0.5).astype(int)
                 y_true_np = y_val_tensor.cpu().numpy().round().astype(int).squeeze()
             elif task_type == "multiclass_classification":
-                # For eval metrics, we need class indices
                 y_pred_np = torch.argmax(val_preds_raw, dim=1).cpu().numpy()
                 y_true_np = y_val_tensor.cpu().numpy().astype(int)
             elif task_type == "prob_vector":
-                # y_pred_np should be the probability distribution
-                y_pred_np = val_preds_raw.cpu().numpy()
+                y_pred_np = F.softmax(val_preds_raw, dim=1).cpu().numpy() # For eval metrics, need probabilities
                 y_true_np = y_val_tensor.cpu().numpy()
-                # Ensure they are 2D arrays (n_samples, n_bins)
                 if y_pred_np.ndim == 1: y_pred_np = y_pred_np.reshape(1, -1)
                 if y_true_np.ndim == 1: y_true_np = y_true_np.reshape(1, -1)
             else:
                 raise ValueError(f"Unsupported task_type: {task_type}")
 
-            # === Evaluate & Log ===
-            # Use the custom eval_metric_fn if provided
+            # === Evaluate & Log Validation Metric ===
+            current_val_score = None
             if eval_metric_fn is not None:
                 try:
-                    # Pass bin_centers if eval_metric_name is EMD
                     if eval_metric_name == "Earth Mover's Distance":
                         if bin_centers is None:
                             raise ValueError("bin_centers must be provided for Earth Mover's Distance metric.")
-                        score = eval_metric_fn(y_true_np, y_pred_np, bin_centers=bin_centers)
+                        current_val_score = eval_metric_fn(y_true_np, y_pred_np, bin_centers=bin_centers)
                     else:
-                        score = eval_metric_fn(y_true_np, y_pred_np)
+                        current_val_score = eval_metric_fn(y_true_np, y_pred_np)
 
-                    # Log to MLflow and WandB if available
                     if 'mlflow' in globals():
-                        mlflow.log_metric(eval_metric_name, score, step=epoch)
-                    if 'wandb' in globals():
-                        wandb.log({eval_metric_name: score, "epoch": epoch})
+                        mlflow.log_metric(eval_metric_name, current_val_score, step=epoch)
+                    # if 'wandb' in globals():
+                    if wandb.run:
+                        wandb.log({eval_metric_name: current_val_score, "epoch": epoch})
                 except Exception as e:
                     print(f"❌ Metric function '{eval_metric_name}' failed: {str(e)}")
                     # Decide whether to raise or just log and continue
-                    # raise # Uncomment if you want to stop on metric calculation errors
             else:
-                # Fallback to standard validation loss if no custom metric function is provided
-                val_loss_value = criterion(val_preds_raw, y_val_tensor).item()
+                # Fallback to standard validation loss for early stopping if no custom metric
+                # This should be consistent with the training criterion
+                if task_type == "prob_vector":
+                    val_loss_value = criterion(F.log_softmax(val_preds_raw, dim=1), y_val_tensor).item()
+                else:
+                    val_loss_value = criterion(val_preds_raw, y_val_tensor).item()
+                
+                current_val_score = val_loss_value # Use validation loss for early stopping
+                
                 if 'mlflow' in globals():
-                    mlflow.log_metric("val_loss", val_loss_value, step=epoch)
-                if 'wandb' in globals():
-                    wandb.log({"val_loss": val_loss_value, "epoch": epoch})
+                    mlflow.log_metric("val_loss", current_val_score, step=epoch)
+                if wandb.run:
+                    wandb.log({"val_loss": current_val_score, "epoch": epoch})
 
         # Log training loss (always)
         if 'mlflow' in globals():
             mlflow.log_metric("train_loss", epoch_loss, step=epoch)
-        if 'wandb' in globals():
+        if wandb.run:
             wandb.log({"train_loss": epoch_loss, "epoch": epoch})
 
-    return model, y_pred_np
+        # --- Early Stopping Logic ---
+        if current_val_score is not None:
+            # For loss-like metrics (lower is better)
+            if (eval_metric_fn is None or eval_metric_name in ["KL Divergence", "Jensen-Shannon Divergence", "Cross-Entropy", "L1 Loss", "L2 Loss", "Earth Mover's Distance"]):
+                if current_val_score < best_val_score:
+                    best_val_score = current_val_score
+                    epochs_no_improve = 0
+                    best_model_state = model.state_dict() # Save best model weights
+                    # print(f"Epoch {epoch+1}/{epochs}: New best validation score ({eval_metric_name if eval_metric_fn else 'val_loss'}): {best_val_score:.4f}")
+                else:
+                    epochs_no_improve += 1
+                    # print(f"Epoch {epoch+1}/{epochs}: No improvement for {epochs_no_improve} epochs. Best: {best_val_score:.4f}. Current: {current_val_score:.4f}")
+            # For score-like metrics (higher is better, e.g., accuracy, R2)
+            else:
+                if current_val_score > best_val_score:
+                    best_val_score = current_val_score
+                    epochs_no_improve = 0
+                    best_model_state = model.state_dict() # Save best model weights
+                    # print(f"Epoch {epoch+1}/{epochs}: New best validation score ({eval_metric_name if eval_metric_fn else 'val_loss'}): {best_val_score:.4f}")
+                else:
+                    epochs_no_improve += 1
+                    # print(f"Epoch {epoch+1}/{epochs}: No improvement for {epochs_no_improve} epochs. Best: {best_val_score:.4f}. Current: {current_val_score:.4f}")
 
+            if epochs_no_improve >= patience:
+                # print(f"Early stopping triggered after {epoch+1} epochs (patience={patience}).")
+                break # Exit training loop
+
+    # --- Load Best Model Weights if Early Stopping Occurred ---
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        print("Loaded best model state from early stopping.")
+    else:
+        # If no improvement ever happened (e.g., patience = epochs), the last state is used.
+        # This can also happen if only 1 epoch runs.
+        print("No improvement recorded or patience not met, using final model state.")
+
+    # Get final predictions from the (potentially restored) best model
+    model.eval()
+    with torch.no_grad():
+        final_val_preds_raw = model(X_val_tensor)
+        if task_type == "prob_vector":
+            final_y_pred_np = F.softmax(final_val_preds_raw, dim=1).cpu().numpy()
+        elif task_type == "binary_classification":
+            final_y_pred_np = (torch.sigmoid(final_val_preds_raw) > 0.5).int().cpu().numpy().squeeze()
+        elif task_type == "multiclass_classification":
+            final_y_pred_np = torch.argmax(final_val_preds_raw, dim=1).cpu().numpy()
+        else: # Regression
+            final_y_pred_np = final_val_preds_raw.cpu().numpy().squeeze()
+
+    return model, final_y_pred_np
 
 
 
