@@ -9,6 +9,7 @@ wandb/storage/*
 wandb/mysql/*
 mlruns/*
 **/submission.csv
+**/*.gif
 workspace/**/submission.csv
 **/*.npy
 wandb/

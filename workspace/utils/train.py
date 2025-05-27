@@ -59,6 +59,93 @@ def train_sklearn_model(model, X_train, y_train, X_val, y_val, task_type):
     return model, y_pred
 
 
+
+
+
+
+###########################################
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class BayesianDirectionalLoss(nn.Module):
+    def __init__(self, bin_centers, right_penalty_multiplier=1.2):
+        super().__init__()
+        if not isinstance(bin_centers, torch.Tensor):
+            # Convert if it's a list or numpy array, ensure it's a tensor
+            bin_centers = torch.tensor(bin_centers, dtype=torch.float32)
+        self.bin_centers = bin_centers  # Expected to be 1D tensor
+        self.right_penalty_multiplier = right_penalty_multiplier
+        self.num_bins = len(bin_centers)
+
+        # Ensure bin_centers is registered as a buffer if you want it to move with model.to(device)
+        # and be part of state_dict, though for loss functions, manual .to(device) is common.
+        self.register_buffer('_bin_centers_internal', self.bin_centers, persistent=False)
+
+
+    def forward(self, preds_logits, yb_indices):
+        """
+        Calculates the custom loss.
+        Args:
+            preds_logits (torch.Tensor): Raw output from the model (logits).
+                                         Shape: (batch_size, num_bins)
+            yb_indices (torch.Tensor): True bin indices (LongTensor).
+                                       Shape: (batch_size)
+        Returns:
+            torch.Tensor: Scalar mean loss for the batch.
+        """
+        current_bin_centers = self._bin_centers_internal
+        if current_bin_centers.device != preds_logits.device:
+            current_bin_centers = current_bin_centers.to(preds_logits.device)
+
+        # Part 1: Bayesian-inspired similarity component (Hellinger distance based)
+        # -----------------------------------------------------------------------
+        # Convert logits to probabilities
+        p_pred = F.softmax(preds_logits, dim=1)  # Shape: (batch_size, num_bins)
+
+        # Create one-hot encoded target distribution from true bin indices
+        # yb_indices needs to be LongTensor for F.one_hot
+        p_target_one_hot = F.one_hot(yb_indices, num_classes=self.num_bins).float()
+        # Shape: (batch_size, num_bins)
+
+        # Calculate Bhattacharyya coefficient (BC) for each sample: sum(sqrt(p_i * q_i))
+        # This measures the overlap between the two distributions.
+        sqrt_elementwise_product = torch.sqrt(p_pred * p_target_one_hot)
+        bhattacharyya_coeffs = torch.sum(sqrt_elementwise_product, dim=1)  # Shape: (batch_size)
+
+        # The base loss for each sample is derived from Hellinger distance (1 - BC).
+        # A higher BC (more similarity) means lower loss. Max BC is 1 (loss 0). Min BC is 0 (loss 1).
+        loss_similarity_per_sample = 1.0 - bhattacharyya_coeffs
+
+        # Part 2: Asymmetric Directional Penalty Multiplier
+        # -------------------------------------------------
+        # Calculate the expected value of the predicted distribution
+        # Unsqueeze current_bin_centers to (1, num_bins) for broadcasting with p_pred (batch_size, num_bins)
+        expected_value_pred = torch.sum(p_pred * current_bin_centers.unsqueeze(0), dim=1)  # Shape: (batch_size)
+
+        # Get the numerical value of the actual (true) bin
+        value_actual_bin = current_bin_centers[yb_indices]  # Shape: (batch_size)
+
+        # Determine if the prediction's expected value is "to the right" of the actual value
+        is_pred_to_the_right = expected_value_pred > value_actual_bin  # Boolean tensor, Shape: (batch_size)
+
+        # Create multipliers: 1.2 if prediction is to the right, 1.0 otherwise
+        loss_multipliers = torch.ones_like(loss_similarity_per_sample) # Default multiplier is 1.0
+        loss_multipliers[is_pred_to_the_right] = self.right_penalty_multiplier
+
+        # Apply the multiplier to the similarity-based loss
+        final_loss_per_sample = loss_similarity_per_sample * loss_multipliers
+
+        # Return the mean loss over the batch
+        return torch.mean(final_loss_per_sample)
+    ################################################
+
+
+
+
+
+
+
 def train_nn_model(
     model, X_train, y_train, X_val, y_val,
     epochs=10,
@@ -131,6 +218,15 @@ def train_nn_model(
     best_model_state = None # To save the best model state_dict
     y_preds_per_epoch_list = []
 
+    if task_type == "prob_vector":
+        
+        custom_loss_fn_prob_vector = BayesianDirectionalLoss(
+            bin_centers=bin_centers,
+            right_penalty_multiplier=1.2
+        )
+    else:
+        pass #just use criterion, but left out for now
+
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
@@ -139,18 +235,21 @@ def train_nn_model(
             preds = model(xb)
 
             if task_type == "prob_vector":
-                log_probs = F.log_softmax(preds, dim=1)
-                loss = criterion(log_probs, yb)
+                if yb.dtype != torch.long:
+                    yb = yb.long()
+                current_loss = custom_loss_fn_prob_vector(preds, yb)
+                # log_probs = F.log_softmax(preds, dim=1)
+                # loss = criterion(log_probs, yb)
             elif task_type in ["binary_classification", "multiclass_classification"]:
-                loss = criterion(preds, yb) # These criteria expect raw logits
+                current_loss = criterion(preds, yb) # These criteria expect raw logits
             else: # Regression
-                loss = criterion(preds, yb)
+                current_loss = criterion(preds, yb)
 
             optimizer.zero_grad()
-            loss.backward()
+            current_loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
-        epoch_loss /= len(train_loader)
+            epoch_loss_sum += current_loss.item() * xb.size(0)
+        epoch_loss_avg = epoch_loss_sum / len(train_loader.dataset) 
 
         # === Validation ===
         model.eval()
