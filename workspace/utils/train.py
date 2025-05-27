@@ -125,10 +125,11 @@ def train_nn_model(
     best_val_score = float('inf') if (eval_metric_fn is None or eval_metric_name in ["KL Divergence", "Jensen-Shannon Divergence", "Cross-Entropy", "L1 Loss", "L2 Loss", "Earth Mover's Distance"]) else float('-inf')
     # If eval_metric_fn is a "loss" (lower is better), we want to minimize it.
     # If eval_metric_fn is a "score" (higher is better, like accuracy), we want to maximize it.
-    # We default to minimizing loss, as your primary metrics (KL, JS, CE, L1, L2, EMD) are losses.
-    # If you introduce an accuracy-like metric, adjust `best_val_score` init and comparison.
+    # default to minimizing loss, as primary metrics (KL, JS, CE, L1, L2, EMD) are losses.
+    # If accuracy-like metric, adjust `best_val_score` init and comparison.
     epochs_no_improve = 0
     best_model_state = None # To save the best model state_dict
+    y_preds_per_epoch_list = []
 
     for epoch in range(epochs):
         model.train()
@@ -157,23 +158,30 @@ def train_nn_model(
             val_preds_raw = model(X_val_tensor)
 
             # Convert predictions and true values to NumPy for evaluation on CPU
+            current_y_pred_np = None # Will store the predictions for the current epoch
             if task_type == "regression":
-                y_pred_np = val_preds_raw.cpu().numpy().squeeze()
+                current_y_pred_np = val_preds_raw.cpu().numpy().squeeze()
                 y_true_np = y_val_tensor.cpu().numpy().squeeze()
             elif task_type == "binary_classification":
                 y_pred_probs_np = torch.sigmoid(val_preds_raw).cpu().numpy().squeeze()
-                y_pred_np = (y_pred_probs_np > 0.5).astype(int)
+                current_y_pred_np = (y_pred_probs_np > 0.5).astype(int)
                 y_true_np = y_val_tensor.cpu().numpy().round().astype(int).squeeze()
             elif task_type == "multiclass_classification":
-                y_pred_np = torch.argmax(val_preds_raw, dim=1).cpu().numpy()
+                current_y_pred_np = torch.argmax(val_preds_raw, dim=1).cpu().numpy()
                 y_true_np = y_val_tensor.cpu().numpy().astype(int)
             elif task_type == "prob_vector":
-                y_pred_np = F.softmax(val_preds_raw, dim=1).cpu().numpy() # For eval metrics, need probabilities
+                # For eval metrics, need probabilities
+                current_y_pred_np = F.softmax(val_preds_raw, dim=1).cpu().numpy()
                 y_true_np = y_val_tensor.cpu().numpy()
-                if y_pred_np.ndim == 1: y_pred_np = y_pred_np.reshape(1, -1)
+                if current_y_pred_np.ndim == 1: current_y_pred_np = current_y_pred_np.reshape(1, -1)
                 if y_true_np.ndim == 1: y_true_np = y_true_np.reshape(1, -1)
             else:
                 raise ValueError(f"Unsupported task_type: {task_type}")
+
+            # --- Store predictions for current epoch ---
+            if current_y_pred_np is not None:
+                y_preds_per_epoch_list.append(current_y_pred_np.copy()) # Append a copy!
+
 
             # === Evaluate & Log Validation Metric ===
             current_val_score = None
@@ -182,9 +190,9 @@ def train_nn_model(
                     if eval_metric_name == "Earth Mover's Distance":
                         if bin_centers is None:
                             raise ValueError("bin_centers must be provided for Earth Mover's Distance metric.")
-                        current_val_score = eval_metric_fn(y_true_np, y_pred_np, bin_centers=bin_centers)
+                        current_val_score = eval_metric_fn(y_true_np, current_y_pred_np, bin_centers=bin_centers)
                     else:
-                        current_val_score = eval_metric_fn(y_true_np, y_pred_np)
+                        current_val_score = eval_metric_fn(y_true_np, current_y_pred_np)
 
                     if 'mlflow' in globals():
                         mlflow.log_metric(eval_metric_name, current_val_score, step=epoch)
@@ -195,8 +203,6 @@ def train_nn_model(
                     print(f"❌ Metric function '{eval_metric_name}' failed: {str(e)}")
                     # Decide whether to raise or just log and continue
             else:
-                # Fallback to standard validation loss for early stopping if no custom metric
-                # This should be consistent with the training criterion
                 if task_type == "prob_vector":
                     val_loss_value = criterion(F.log_softmax(val_preds_raw, dim=1), y_val_tensor).item()
                 else:
@@ -264,7 +270,7 @@ def train_nn_model(
         else: # Regression
             final_y_pred_np = final_val_preds_raw.cpu().numpy().squeeze()
 
-    return model, final_y_pred_np
+    return model, final_y_pred_np, y_preds_per_epoch_list
 
 
 
