@@ -239,6 +239,10 @@ def train_nn_model(
     X_train_tensor = torch.tensor(X_train.values if isinstance(X_train, pd.DataFrame) else X_train, dtype=torch.float32).to(device)
     X_val_tensor = torch.tensor(X_val.values if isinstance(X_val, pd.DataFrame) else X_val, dtype=torch.float32).to(device)
 
+    # Convert from DataFrame to 1D NumPy array of ints
+    y_train = y_train.squeeze().astype(int).values if isinstance(y_train, pd.DataFrame) else y_train
+    y_val = y_val.squeeze().astype(int).values if isinstance(y_val, pd.DataFrame) else y_val
+
     y_train_np = y_train.values if isinstance(y_train, pd.DataFrame) else np.asarray(y_train)
     y_val_np = y_val.values if isinstance(y_val, pd.DataFrame) else np.asarray(y_val)
 
@@ -252,6 +256,7 @@ def train_nn_model(
         y_val_tensor = torch.tensor(y_val_np, dtype=torch.float32).unsqueeze(1).to(device)
         criterion = nn.BCEWithLogitsLoss() # Expects raw logits from model
     elif task_type == "multiclass_classification":
+        # Convert from DataFrame to 1D NumPy array of ints
         y_train_tensor = torch.tensor(y_train_np.squeeze(), dtype=torch.long).to(device)
         y_val_tensor = torch.tensor(y_val_np.squeeze(), dtype=torch.long).to(device)
         criterion = nn.CrossEntropyLoss() # Expects raw logits from model
@@ -263,7 +268,7 @@ def train_nn_model(
         raise ValueError(f"Unsupported task_type: {task_type}")
 
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     best_val_score = float('inf')
@@ -299,7 +304,6 @@ def train_nn_model(
             else: # For regression, binary_classification, multiclass_classification
                   # criterion (MSELoss, BCEWithLogitsLoss, CrossEntropyLoss) typically takes raw logits
                 current_loss = criterion(preds_raw, yb)
-
             optimizer.zero_grad()
             current_loss.backward()
             optimizer.step()
