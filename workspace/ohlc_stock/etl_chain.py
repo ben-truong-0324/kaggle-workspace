@@ -2,6 +2,8 @@ import pandas as pd
 from pydantic import BaseModel, Field
 from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, Union, Iterator, Tuple
 from sklearn.model_selection import train_test_split
+from scipy.stats import skew, kurtosis
+
 # from sklearn.impute import KNNImputer # Commented out as per request
 # from sklearn.preprocessing import MinMaxScaler # Commented out as per request
 # from sklearn.decomposition import FastICA # Commented out as per request
@@ -892,3 +894,203 @@ def check_na_rows(df, perc_nan_thres=5, sample_size=100):
             print(df[col].isna().sum())
             nan_idx = df.index[df[col].isna()]
             print(f"Sample indices with NaN in '{col}': {list(nan_idx[:sample_size])}")
+
+
+
+
+def ytarget_lagged_moments(y_bins, bin_centers, window):
+    vals = y_bins.values
+    index = y_bins.index
+    means, medians, skews, kurts = [], [], [], []
+    for i in range(len(y_bins)):
+        lagged_idx = i - window
+        if lagged_idx < 0:
+            means.append(np.nan)
+            medians.append(np.nan)
+            skews.append(np.nan)
+            kurts.append(np.nan)
+            continue
+        p = vals[lagged_idx]
+        # Weighted mean
+        means.append(np.dot(p, bin_centers))
+        # Weighted median
+        cdf = np.cumsum(p)
+        medians.append(bin_centers[np.searchsorted(cdf, 0.5)])
+        # Skew and kurtosis via sampling
+        if p.sum() > 0:
+            samples = np.random.choice(bin_centers, p=(p/p.sum()), size=100)
+            skews.append(skew(samples))
+            kurts.append(kurtosis(samples))
+        else:
+            skews.append(np.nan)
+            kurts.append(np.nan)
+    return pd.DataFrame({
+        f'y_mean_prev{window}d': means,
+        f'y_median_prev{window}d': medians,
+        f'y_skew_prev{window}d': skews,
+        f'y_kurtosis_prev{window}d': kurts,
+    }, index=index)
+
+
+def add_lagged_target_moments(
+    main_df: pd.DataFrame,
+    y_target_df: pd.DataFrame,
+    centers_of_bins: np.ndarray, 
+    window_sizes: list[int]
+) -> pd.DataFrame:
+    """
+    Calculates rolling moments from a target DataFrame and joins them
+    as features to the main DataFrame.
+    Returns:
+        A new DataFrame with the added rolling moment features.
+        original main_df is not modified.
+    """
+    df_processed = main_df.copy(deep=True)
+    print(f"\nAdding lagged target moments for windows: {window_sizes}...")
+    for window in window_sizes:
+        moments_features_df = ytarget_lagged_moments(y_target_df, centers_of_bins, window)
+        if not moments_features_df.empty:
+            df_processed = df_processed.join(moments_features_df)
+            print(f"  Joined features for window {window}. New df shape: {df_processed.shape}")
+        else:
+            print(f"  No moment features generated for window {window}. Skipping join.")
+    return df_processed
+
+
+
+
+def engineer_technical_indicators_relative(input_df: pd.DataFrame,
+                                           price_col: str = 'Adj Close',
+                                           short_ma_period: int = 10,
+                                           long_ma_period: int = 50,
+                                           roc_period: int = 10,
+                                           momentum_period: int = 10,
+                                           volatility_period: int = 10,
+                                           atr_period: int = 14,
+                                           rsi_period: int = 14,
+                                           macd_short_period: int = 12,
+                                           macd_long_period: int = 26,
+                                           macd_signal_period: int = 9,
+                                           bb_period: int = 20,
+                                           bb_std_dev: int = 2,
+                                           volume_z_period: int = 20
+                                           ) -> pd.DataFrame:
+    """
+    Engineers technical indicators, focusing on relative/ranged values
+    and dropping intermediate absolute value columns.
+    Args:
+        input_df: Pandas DataFrame with 'Adj Close', 'High', 'Low', 'Volume' columns.
+        price_col: Name of the column to use for price-based calculations.
+    Returns:
+        pd df with new relative technical indicator features.
+        Original DataFrame is not modified.
+    """
+    df = input_df.copy(deep=True)
+    epsilon = 1e-9 
+
+    # --- Price-based indicators ---
+    if price_col in df.columns and df[price_col].notna().any():
+        current_price = df[price_col]
+
+        # Moving Averages (Relative to current price)
+        sma_short = current_price.rolling(short_ma_period, min_periods=1).mean()
+        sma_long = current_price.rolling(long_ma_period, min_periods=1).mean()
+        ema_short = current_price.ewm(span=short_ma_period, adjust=False, min_periods=1).mean()
+        ema_long = current_price.ewm(span=long_ma_period, adjust=False, min_periods=1).mean()
+
+        df[f'sma_{short_ma_period}_rel'] = (current_price / (sma_short + epsilon)) - 1
+        df[f'sma_{long_ma_period}_rel'] = (current_price / (sma_long + epsilon)) - 1
+        df[f'ema_{short_ma_period}_rel'] = (current_price / (ema_short + epsilon)) - 1
+        df[f'ema_{long_ma_period}_rel'] = (current_price / (ema_long + epsilon)) - 1
+
+        # Rate of Change (already relative)
+        df[f'roc_{roc_period}'] = current_price.pct_change(periods=roc_period)
+
+        # Momentum (Normalized by current price)
+        momentum_abs = current_price.diff(periods=momentum_period)
+        df[f'momentum_{momentum_period}_norm'] = momentum_abs / (current_price + epsilon)
+
+        rolling_std_abs = current_price.rolling(volatility_period, min_periods=1).std()
+        df[f'volatility_{volatility_period}_norm'] = rolling_std_abs / (current_price + epsilon)
+        
+        # True Range and ATR (Normalized ATR)
+        if 'High' in df.columns and 'Low' in df.columns:
+            prev_close_atr_temp = current_price.shift(1).bfill() # bfill handles first NaN
+            tr1 = df['High'] - df['Low']
+            tr2 = abs(df['High'] - prev_close_atr_temp)
+            tr3 = abs(df['Low'] - prev_close_atr_temp)
+            tr_calc_temp = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1, skipna=False)
+            atr_abs = tr_calc_temp.rolling(atr_period, min_periods=1).mean()
+            df[f'atr_{atr_period}_norm'] = atr_abs / (current_price + epsilon)
+        else:
+            print(f"Warning: 'High' or 'Low' not found. Normalized ATR skipped.")
+
+        # RSI (ranged 0-100)
+        delta_rsi = current_price.diff(1)
+        gain_rsi = delta_rsi.where(delta_rsi > 0, 0.0)
+        loss_rsi = -delta_rsi.where(delta_rsi < 0, 0.0)
+        avg_gain_rsi = gain_rsi.ewm(alpha=1/rsi_period, adjust=False, min_periods=1).mean()
+        avg_loss_rsi = loss_rsi.ewm(alpha=1/rsi_period, adjust=False, min_periods=1).mean()
+        rs_rsi = avg_gain_rsi / (avg_loss_rsi + epsilon)
+        rsi_col_name = f'rsi_{rsi_period}'
+        df[rsi_col_name] = 100.0 - (100.0 / (1.0 + rs_rsi))
+        df.loc[avg_loss_rsi < epsilon, rsi_col_name] = 100.0
+        df.loc[(avg_gain_rsi < epsilon) & (avg_loss_rsi >= epsilon), rsi_col_name] = 0.0
+        df.loc[(avg_gain_rsi < epsilon) & (avg_loss_rsi < epsilon), rsi_col_name] = 50.0 # Both near zero, neutral
+        df[rsi_col_name] = df[rsi_col_name].fillna(50) # Fill initial NaNs
+
+        # MACD -> PPO (Percentage Price Oscillator)
+        ppo_ema_short = current_price.ewm(span=macd_short_period, adjust=False, min_periods=1).mean()
+        ppo_ema_long = current_price.ewm(span=macd_long_period, adjust=False, min_periods=1).mean()
+        df['ppo'] = ((ppo_ema_short - ppo_ema_long) / (ppo_ema_long + epsilon)) * 100 # PPO is a percentage
+        df['ppo_signal'] = df['ppo'].ewm(span=macd_signal_period, adjust=False, min_periods=1).mean()
+        df['ppo_hist'] = df['ppo'] - df['ppo_signal']
+
+        # Bollinger Bands (Using %B and Bandwidth)
+        bb_mid_abs = current_price.rolling(bb_period, min_periods=1).mean()
+        bb_std_abs = current_price.rolling(bb_period, min_periods=1).std().fillna(0) # fillna for std if window has 1 point
+        
+        bb_upper_abs = bb_mid_abs + bb_std_dev * bb_std_abs
+        bb_lower_abs = bb_mid_abs - bb_std_dev * bb_std_abs
+
+        # Bandwidth (relative width of bands)
+        df[f'bb_bandwidth_{bb_period}'] = (bb_upper_abs - bb_lower_abs) / (bb_mid_abs + epsilon)
+
+        # %B (price position relative to bands)
+        bb_range = bb_upper_abs - bb_lower_abs
+        df[f'bb_percent_b_{bb_period}'] = (current_price - bb_lower_abs) / (bb_range + epsilon)
+        # If range is 0, price is likely equal to lower and upper band.
+        # If price == lower == upper, (P-L)/(U-L) = 0/0 -> NaN. %B can be set to 0.5.
+        # If P > L and U-L=0, inf. If P < L and U-L=0, -inf.
+        df.loc[bb_range < epsilon, f'bb_percent_b_{bb_period}'] = np.where(
+            abs(current_price[bb_range < epsilon] - bb_mid_abs[bb_range < epsilon]) < epsilon, # Price is at mid when std is 0
+            0.5, # Price is at the (collapsed) band center
+            np.where(current_price[bb_range < epsilon] > bb_mid_abs[bb_range < epsilon], 1.0, 0.0) # Price is above or below
+        )
+        # df[f'bb_percent_b_{bb_period}'].fillna(0.5, inplace=True) # Fill any other NaNs (e.g., initial)
+        df = df.fillna({f'bb_percent_b_{bb_period}': 0.5}, inplace=True) #if broken, use above
+        df[f'bb_percent_b_{bb_period}'] = df[f'bb_percent_b_{bb_period}'].clip(0, 1) # Common clipping
+    else:
+        print(f"Warning: Price column '{price_col}' not found or all NaN. Most price-based indicators skipped.")
+
+    if 'Volume' in df.columns and df['Volume'].notna().any():
+        vol_z_col_name = f'volume_z_{volume_z_period}'
+        volume_rolling = df['Volume'].rolling(volume_z_period, min_periods=1)
+        volume_mean = volume_rolling.mean()
+        volume_std = volume_rolling.std().fillna(0) # fillna for std if window has 1 point
+        df[vol_z_col_name] = (df['Volume'] - volume_mean) / (volume_std + epsilon)
+        df[vol_z_col_name] = df[vol_z_col_name].fillna(0)
+    else:
+        print(f"Warning: 'Volume' column not found or all NaN. Volume Z-score skipped.")
+
+    return df
+
+def df_progress_check(df1, df2, y_df1, y_df2):
+    print(df1.shape)
+    print(y_df1.shape)
+    print(df2.shape)
+    print(y_df2.shape)
+    check_na_rows(df1)
+    check_na_rows(y_df1)
+    check_na_rows(df2)
+    check_na_rows(y_df2)
