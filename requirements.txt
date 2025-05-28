@@ -20,3 +20,4 @@ yfinance
 pandas_datareader
 plotly         
 umap-learn     
+fastparquet

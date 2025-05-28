@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # Jupyter Notebook/Lab service
   jupyter:
     build: .
     container_name: kaggle_jupyter
