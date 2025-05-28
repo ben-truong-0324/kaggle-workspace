@@ -4,18 +4,18 @@ from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, Union,
 from sklearn.model_selection import train_test_split
 from scipy.stats import skew, kurtosis
 
-# from sklearn.impute import KNNImputer # Commented out as per request
-# from sklearn.preprocessing import MinMaxScaler # Commented out as per request
-# from sklearn.decomposition import FastICA # Commented out as per request
-# from sklearn.cluster import KMeans # Commented out as per request
-# from sklearn.mixture import GaussianMixture # Commented out as per request
-# from sklearn.metrics import pairwise_distances # Commented out as per request
+# from sklearn.impute import KNNImputer
+# from sklearn.preprocessing import MinMaxScaler 
+# from sklearn.decomposition import FastICA 
+# from sklearn.cluster import KMeans 
+from sklearn.mixture import GaussianMixture 
+# from sklearn.metrics import pairwise_distances 
 import numpy as np
 import time
 import os
 import re
-# from collections import defaultdict # Commented out as per request
-# from scipy.stats import fisher_exact # Commented out as per request
+# from collections import defaultdict
+# from scipy.stats import fisher_exact 
 
 from pathlib import Path
 
@@ -1094,3 +1094,84 @@ def df_progress_check(df1, df2, y_df1, y_df2):
     check_na_rows(y_df1)
     check_na_rows(df2)
     check_na_rows(y_df2)
+
+
+
+def fit_gmm_on_train_transform_splits(
+    y_target_train_vectors_df: pd.DataFrame,
+    y_target_val_vectors_df: pd.DataFrame,
+    y_target_test_vectors_df: pd.DataFrame,
+    current_bin_edges: list, 
+    current_bin_labels: list,
+    n_clusters: int = 9
+):
+    """
+    Calculates EV, fits GMM on training data, and transforms both train and validation data.
+    The y_target inputs are DataFrames of probability vectors.
+    """
+    # Helper to calculate EV and get numeric data for a partition
+    def _process_partition(y_vectors_df_partition):
+        num_bins_local = len(current_bin_edges) - 1
+        midpoints_local = []
+        for i in range(num_bins_local):
+            lower, upper = current_bin_edges[i], current_bin_edges[i+1]
+            if lower == float('-inf'): midpoints_local.append(upper)
+            elif upper == float('inf'): midpoints_local.append(lower)
+            else: midpoints_local.append((lower + upper) / 2)
+        midpoints_series_local = pd.Series(midpoints_local, index=current_bin_labels)
+
+        # Ensure only expected bin columns are used and are numeric
+        y_numeric_partition = y_vectors_df_partition[current_bin_labels].apply(pd.to_numeric, errors='coerce').fillna(0)
+        
+        total_sums = y_numeric_partition.sum(axis=1) # Renamed from total_counts for clarity (they are sums of probabilities)
+        weighted_sum = (y_numeric_partition * midpoints_series_local).sum(axis=1)
+        
+        ev_partition = np.full(len(y_vectors_df_partition), np.nan)
+        # Calculate EV only where total_sums is not zero (and not NaN)
+        valid_ev_mask = (total_sums != 0) & (~total_sums.isna())
+        ev_partition[valid_ev_mask] = weighted_sum[valid_ev_mask] / total_sums[valid_ev_mask]
+        
+        output_df = y_vectors_df_partition.copy()
+        output_df['EV'] = ev_partition
+        return output_df, y_numeric_partition
+
+    print("Processing training data for EV and GMM fitting...")
+    y_train_with_ev, y_train_numeric = _process_partition(y_target_train_vectors_df)
+    print("Processing validation data for EV and GMM transforming...")
+    y_val_with_ev, y_val_numeric = _process_partition(y_target_val_vectors_df)
+    print("Processing test data for EV and GMM transforming...")
+    y_test_with_ev, y_test_numeric = _process_partition(y_target_test_vectors_df)
+
+    gmm = GaussianMixture(n_components=n_clusters, random_state=42, covariance_type='full', n_init=10) # Added n_init
+    
+    gmm.fit(y_train_numeric)
+    print("GMM fitting complete.")
+
+    # Predict cluster assignments and GMM probabilities for the original train set
+    y_train_with_ev['Cluster_Assignment'] = gmm.predict(y_train_numeric)    
+    train_cluster_probas = gmm.predict_proba(y_train_numeric)
+    y_train_gmm_probas_df = pd.DataFrame(
+        train_cluster_probas, index=y_train_with_ev.index,
+        columns=[f'GMM_Clust{i}_Prob' for i in range(n_clusters)]
+    )
+    y_train_with_ev = y_train_with_ev.join(y_train_gmm_probas_df)
+
+    # Predict cluster assignments and GMM probabilities for the validation set
+    y_val_with_ev['Cluster_Assignment'] = gmm.predict(y_val_numeric)
+    val_cluster_probas = gmm.predict_proba(y_val_numeric)
+    y_val_gmm_probas_df = pd.DataFrame(
+        val_cluster_probas, index=y_val_with_ev.index,
+        columns=[f'GMM_Clust{i}_Prob' for i in range(n_clusters)]
+    )
+    y_val_with_ev = y_val_with_ev.join(y_val_gmm_probas_df)
+
+    # Predict cluster assignments and GMM probabilities for the test set
+    y_test_with_ev['Cluster_Assignment'] = gmm.predict(y_test_numeric)
+    test_cluster_probas = gmm.predict_proba(y_test_numeric)
+    y_test_gmm_probas_df = pd.DataFrame(
+        test_cluster_probas, index=y_test_with_ev.index,
+        columns=[f'GMM_Clust{i}_Prob' for i in range(n_clusters)]
+    )
+    y_test_with_ev = y_test_with_ev.join(y_test_gmm_probas_df)
+    
+    return y_train_with_ev, y_val_with_ev, y_test_with_ev, gmm

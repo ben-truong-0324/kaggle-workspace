@@ -11,9 +11,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score
 from sklearn.covariance import EllipticEnvelope
 
-from scipy.stats import skew, kurtosis
-from scipy import stats
-
+from scipy.stats import skew, kurtosis, mannwhitneyu, ks_2samp, chi2_contingency, ttest_ind, levene, shapiro
 from statsmodels.stats.proportion import proportion_confint
 
 import matplotlib.pyplot as plt
@@ -548,7 +546,7 @@ def eda_vis_v2(X,y):
                 stats_summary_text += "Chi-squared test not applicable (needs at least 2 categories).\n"
                 ax_2_1.text(0.5,0.5, "Needs at least 2 categories for Chi2 test", ha='center', va='center', transform=ax_2_1.transAxes)
             else:
-                chi2, p_chi2, dof, expected = stats.chi2_contingency(contingency_table)
+                chi2, p_chi2, dof, expected = chi2_contingency(contingency_table)
                 stats_summary_text += f"Chi-squared Test of Independence:\n"
                 stats_summary_text += f"  Chi2 Stat: {chi2:.2f}, P-value: {p_chi2:.3g}\n  DOF: {dof}\n"
                 interpretation_text += f"P-value ({p_chi2:.3g}) for Chi-squared test: "
@@ -610,11 +608,11 @@ def eda_vis_v2(X,y):
             stats_summary_text += "Normality (Shapiro-Wilk):\n"
             norm_p0, norm_p1 = -1.0, -1.0 # Initialize as float
             if len(group0) >=3 : 
-                shapiro_stat0, norm_p0 = stats.shapiro(group0)
+                shapiro_stat0, norm_p0 = shapiro(group0)
                 stats_summary_text += f"  Group 0 (Not Transported): p={norm_p0:.3g}\n"
             else: stats_summary_text += "  Group 0: Too few samples for normality test.\n"
             if len(group1) >=3 :
-                shapiro_stat1, norm_p1 = stats.shapiro(group1)
+                shapiro_stat1, norm_p1 = shapiro(group1)
                 stats_summary_text += f"  Group 1 (Transported): p={norm_p1:.3g}\n"
             else: stats_summary_text += "  Group 1: Too few samples for normality test.\n"
             
@@ -623,11 +621,11 @@ def eda_vis_v2(X,y):
                         (norm_p1 > 0.05 or len(group1) < 3)
 
             if use_ttest and len(group0)>1 and len(group1)>1:
-                levene_stat, levene_p = stats.levene(group0, group1)
+                levene_stat, levene_p = levene(group0, group1)
                 stats_summary_text += f"Homogeneity of Variances (Levene's test): p={levene_p:.3g}\n"
                 equal_var = levene_p > 0.05
 
-                t_stat, p_ttest = stats.ttest_ind(group0, group1, equal_var=equal_var) # nan_policy='omit' is default in newer scipy
+                t_stat, p_ttest = ttest_ind(group0, group1, equal_var=equal_var) # nan_policy='omit' is default in newer scipy
                 stats_summary_text += f"Independent T-test (equal_var={equal_var}):\n"
                 stats_summary_text += f"  T-statistic: {t_stat:.2f}, P-value: {p_ttest:.3g}\n"
                 interpretation_text += f"P-value ({p_ttest:.3g}) from t-test: "
@@ -637,7 +635,7 @@ def eda_vis_v2(X,y):
 
             elif len(group0)>0 and len(group1)>0: 
                 try:
-                    u_stat, p_mannwhitney = stats.mannwhitneyu(group0, group1, alternative='two-sided') # nan_policy='omit' is default
+                    u_stat, p_mannwhitney = mannwhitneyu(group0, group1, alternative='two-sided') # nan_policy='omit' is default
                     stats_summary_text += f"Mann-Whitney U Test:\n"
                     stats_summary_text += f"  U-statistic: {u_stat:.0f}, P-value: {p_mannwhitney:.3g}\n"
                     interpretation_text += f"P-value ({p_mannwhitney:.3g}) from Mann-Whitney U test: "
@@ -782,3 +780,279 @@ def plot_y_bins_rolling_histogram(
     
     plt.tight_layout()
     plt.show()
+
+
+
+def plot_ev_by_cluster_scatter(y_target_df_with_ev, chart_title: str, jitter_strength=0.1):
+    """
+    Visualizes EV distribution per cluster.
+    """
+    if not all(col in y_target_df_with_ev.columns for col in ['EV', 'Cluster_Assignment']):
+        print("Error: 'EV' and/or 'Cluster_Assignment' column(s) not found in y_target_df_with_ev.")
+        print("Please ensure these columns are present.")
+        return
+    df_plot = y_target_df_with_ev.copy()
+    ev_values = df_plot['EV']
+    # Define EV thresholds and colors (same as before)
+    conditions = [
+        ev_values.isna(),
+        ev_values < -0.05,
+        (ev_values >= -0.05) & (ev_values < -0.01),
+        (ev_values >= -0.01) & (ev_values <= 0.01),
+        (ev_values > 0.01) & (ev_values <= 0.05),
+        ev_values > 0.05
+    ]
+    color_map_names = ['grey', 'darkred', 'lightcoral', 'yellow', 'lightgreen', 'darkgreen']
+    df_plot['EV_Color'] = np.select(conditions, color_map_names, default='black')
+    plt.figure(figsize=(12, 4))
+    unique_clusters = sorted(df_plot['Cluster_Assignment'].dropna().unique())
+
+    # Define color labels for the legend
+    legend_labels = {
+        'darkred': 'Deep Red (EV < -0.05)',
+        'lightcoral': 'Light Red (-0.05 <= EV < -0.01)',
+        'yellow': 'Yellow (-0.01 <= EV <= 0.01)',
+        'lightgreen': 'Light Green (0.01 < EV <= 0.05)',
+        'darkgreen': 'Deep Green (EV > 0.05)',
+        'grey': 'NaN EV'
+    }
+    # Plot points for each EV color category to build the legend correctly
+    for color_hex, label in legend_labels.items():
+        subset = df_plot[df_plot['EV_Color'] == color_hex]
+        if not subset.empty:
+            # Apply jitter to x-coordinates
+            x_jittered = subset['Cluster_Assignment'] + np.random.normal(0, jitter_strength, size=len(subset))
+            plt.scatter(x_jittered, subset['EV'], label=label, color=color_hex, alpha=0.7, s=50)
+    plt.title(chart_title, fontsize=16)
+    plt.xlabel('Cluster Assignment', fontsize=14)
+    plt.ylabel('Expected Returns ', fontsize=14)
+    
+    # Set x-axis ticks to be the actual cluster labels
+    if unique_clusters: # Check if unique_clusters is not empty
+        plt.xticks(ticks=unique_clusters, labels=[f'Cluster {c}' for c in unique_clusters])
+    else:
+        plt.xticks([]) # No ticks if no clusters
+
+    plt.grid(True, linestyle='--', alpha=0.7, axis='y') # Grid on y-axis can be helpful
+    # plt.legend(title='Returns Category')
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
+
+
+
+############
+
+
+
+
+def plot_mean_ev_category_shift_comparison(hypothesis_df: pd.DataFrame, chart_title: str):
+    """
+    Plots bar charts comparing Mean EV for train vs. validation,
+    annotated with the Mean EV category shift information.
+
+    Args:
+        hypothesis_df (pd.DataFrame): Output from analyze_cluster_mean_ev_category_shift.
+                                      Expected columns: 'Mean_EV_Train', 'Mean_EV_Val',
+                                                      'Mean_EV_Category_Shift',
+                                                      'Category_Train (MeanEV)',
+                                                      'Category_Val (MeanEV)'.
+    """
+    if hypothesis_df.empty:
+        print("Hypothesis DataFrame for category shifts is empty. Nothing to plot.")
+        return
+
+    metrics_to_plot = [
+        (chart_title, 'Mean_EV_Train', 'Mean_EV_Val')
+    ]
+    
+    n_metrics = len(metrics_to_plot) # This will be 1
+    clusters = hypothesis_df.index.map(str).tolist()
+    x = np.arange(len(clusters)) # x locations for the groups
+    width = 0.35 # width of the bars
+
+    # Since n_metrics is 1, we'll have one subplot.
+    # Adjust figsize if it's just one plot.
+    fig, ax = plt.subplots(figsize=(max(8, 2 * len(clusters)), 4)) # Dynamic width
+
+    plot_label, col_train, col_val = metrics_to_plot[0] # Get the single metric
+    
+    if col_train not in hypothesis_df.columns or col_val not in hypothesis_df.columns:
+        ax.text(0.5, 0.5, f"Required columns\n'{col_train}' or '{col_val}'\nnot found in DataFrame.",
+                ha='center', va='center', transform=ax.transAxes, color='grey', fontsize=10)
+        ax.set_title(plot_label, fontsize=12)
+        ax.set_xticks(x)
+        ax.set_xticklabels(clusters, rotation=45, ha="right")
+        plt.tight_layout()
+        plt.show()
+        return
+
+    train_values = hypothesis_df[col_train].fillna(0)
+    val_values = hypothesis_df[col_val].fillna(0)
+
+    ax.bar(x - width/2, train_values, width, label='Train Mean EV', alpha=0.7, color='cornflowerblue')
+    ax.bar(x + width/2, val_values, width, label='Validation Mean EV', alpha=0.7, color='lightcoral')
+
+    # Annotations based on Mean_EV_Category_Shift
+    for j, cluster_label in enumerate(clusters):
+        category_shift_interp = hypothesis_df['Mean_EV_Category_Shift'].iloc[j]
+        cat_train_label = hypothesis_df['Category_Train (MeanEV)'].iloc[j]
+        cat_val_label = hypothesis_df['Category_Val (MeanEV)'].iloc[j]
+
+        display_text = ""
+        text_color = 'grey' # Default
+
+        if category_shift_interp == "Yes":
+            display_text = f"Category Shift!\n({cat_train_label} → {cat_val_label})"
+            text_color = 'red'
+        elif category_shift_interp == "No":
+            display_text = f"Category Stable\n({cat_train_label})"
+            text_color = 'green'
+        elif "N/A" in category_shift_interp:
+            display_text = "Shift N/A\n(NaN EV)"
+            text_color = 'orange'
+        
+        # Optional: Add Chi2 internal shift info if available and desired
+        chi2_interp = hypothesis_df.get('Chi2_Interpretation (Internal)', pd.Series(dtype=str)).iloc[j]
+        if pd.notna(chi2_interp) and "shifted" in str(chi2_interp).lower() and display_text:
+            display_text += f"\nInternal: {chi2_interp.split('(')[0].strip()}" # Shorten internal message
+            if text_color == 'green': # If mean category was stable, but internal shifted
+                 text_color = 'darkgoldenrod'
+
+
+        y_pos_text = max(train_values.iloc[j], val_values.iloc[j], 0) # Ensure y_pos is not below 0 for text base
+        min_val_text = min(train_values.iloc[j], val_values.iloc[j], 0)
+
+        # Position text: if bars are very different, place near taller; if similar, centered above.
+        # More robust positioning
+        text_y_base = y_pos_text
+        va_text = 'bottom'
+        if abs(y_pos_text - min_val_text) < 0.1 * abs(y_pos_text) and y_pos_text < 0 : # both negative and close
+             text_y_base = min_val_text
+             va_text = 'top'
+        elif y_pos_text < 0: # only max is negative
+             va_text = 'top'
+
+
+        offset_factor = 0.05 * (ax.get_ylim()[1] - ax.get_ylim()[0]) # 5% of y-axis range
+        text_y = text_y_base + offset_factor if va_text == 'bottom' else text_y_base - offset_factor
+
+
+        ax.text(x[j], text_y, display_text,
+                ha='center', va=va_text,
+                fontsize=8, color=text_color, fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.7) if display_text else None)
+
+
+    ax.set_ylabel('Mean EV')
+    ax.set_title(plot_label, fontsize=12)
+    ax.set_xticks(x)
+    ax.set_xticklabels(clusters, rotation=45, ha="right")
+    ax.legend(fontsize=9)
+    ax.grid(True, axis='y', linestyle=':', alpha=0.6)
+    
+    fig.suptitle('Mean EV & Profit Category Shift (Train vs Validation)', fontsize=16, y=1.02)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
+
+
+
+def _categorize_ev_for_cluster_shift_hypo_test(ev_value: float, thresholds: dict) -> str:
+    """
+    Categorizes an EV value into predefined profit/loss categories.
+    """
+    if pd.isna(ev_value):
+        return "Unknown (NaN EV)"
+    if ev_value < thresholds['deep_loss_upper']: return "Deep Loss"
+    if ev_value < thresholds['loss_upper']: return "Loss"
+    if ev_value <= thresholds['neutral_upper']: return "Neutral"
+    if ev_value <= thresholds['profit_upper']: return "Profit"
+    return "Deep Profit"
+
+def analyze_cluster_ev_category_shifts(
+    y_train_processed: pd.DataFrame,
+    y_val_processed: pd.DataFrame,
+    ev_category_thresholds: dict,
+    test_internal_distribution: bool = False # If True, also run Chi2 test on internal EV categories
+) -> pd.DataFrame:
+    """
+    Analyzes if the mean EV of clusters shifts between predefined profit/loss categories
+    from train to validation. Optionally tests for shifts in the internal distribution
+    of EV values across these categories within each cluster.
+    """
+    if not all(col in y_train_processed.columns for col in ['Cluster_Assignment', 'EV']):
+        raise ValueError("y_train_processed must contain 'Cluster_Assignment' and 'EV' columns.")
+    if not all(col in y_val_processed.columns for col in ['Cluster_Assignment', 'EV']):
+        raise ValueError("y_val_processed must contain 'Cluster_Assignment' and 'EV' columns.")
+
+    train_clusters = set(y_train_processed['Cluster_Assignment'].unique())
+    val_clusters = set(y_val_processed['Cluster_Assignment'].unique())
+    common_clusters = sorted(list(train_clusters.intersection(val_clusters)))
+    
+    category_shift_results = []
+    category_names = ["Deep Loss", "Loss", "Neutral", "Profit", "Deep Profit", "Unknown (NaN EV)"]
+
+
+    for cluster_id in common_clusters:
+        ev_train_all = y_train_processed.loc[y_train_processed['Cluster_Assignment'] == cluster_id, 'EV'] # Keep NaNs for now if any
+        ev_val_all = y_val_processed.loc[y_val_processed['Cluster_Assignment'] == cluster_id, 'EV']
+
+        n_train = len(ev_train_all.dropna()) # Count non-NaN for N
+        n_val = len(ev_val_all.dropna())
+
+        # Calculate mean EV for categorization (handle empty series)
+        mean_ev_train = ev_train_all.dropna().mean() if n_train > 0 else np.nan
+        mean_ev_val = ev_val_all.dropna().mean() if n_val > 0 else np.nan
+        
+        category_train = _categorize_ev_for_cluster_shift_hypo_test(mean_ev_train, ev_category_thresholds)
+        category_val = _categorize_ev_for_cluster_shift_hypo_test(mean_ev_val, ev_category_thresholds)
+        
+        mean_ev_category_shifted = "Yes" if category_train != category_val and category_train != "Unknown (NaN EV)" and category_val != "Unknown (NaN EV)" else "No"
+        if category_train == "Unknown (NaN EV)" or category_val == "Unknown (NaN EV)":
+             mean_ev_category_shifted = "N/A (due to NaN mean EV)"
+
+
+        result_dict = {
+            'Cluster': cluster_id,
+            'N_train': n_train,
+            'N_val': n_val,
+            'Mean_EV_Train': mean_ev_train,
+            'Mean_EV_Val': mean_ev_val,
+            'Category_Train (MeanEV)': category_train,
+            'Category_Val (MeanEV)': category_val,
+            'Mean_EV_Category_Shift': mean_ev_category_shifted,
+            'Chi2_p_value (Internal)': np.nan,
+            'Chi2_Interpretation (Internal)': 'Not tested'
+        }
+
+        if test_internal_distribution and n_train >= 5 and n_val >= 5:
+            train_cats = ev_train_all.apply(lambda x: categorize_ev(x, ev_category_thresholds)).value_counts().reindex(category_names, fill_value=0)
+            val_cats = ev_val_all.apply(lambda x: categorize_ev(x, ev_category_thresholds)).value_counts().reindex(category_names, fill_value=0)
+            
+            contingency_table = pd.DataFrame({'Train': train_cats, 'Val': val_cats})
+            
+            # Remove categories where both train and val have zero counts to avoid issues with chi2
+            contingency_table = contingency_table.loc[(contingency_table.sum(axis=1) > 0)]
+
+            if contingency_table.shape[0] >= 2 and contingency_table.shape[1] == 2: # Need at least 2 categories with some data
+                try:
+                    chi2_stat, chi2_pval, _, _ = chi2_contingency(contingency_table)
+                    result_dict['Chi2_p_value (Internal)'] = chi2_pval
+                    if pd.isna(chi2_pval): result_dict['Chi2_Interpretation (Internal)'] = "Chi2 error"
+                    elif chi2_pval <= 0.05: result_dict['Chi2_Interpretation (Internal)'] = "Internal category distribution likely shifted"
+                    else: result_dict['Chi2_Interpretation (Internal)'] = "Internal category distribution likely similar"
+                except ValueError: # e.g. if table sums to zero
+                     result_dict['Chi2_Interpretation (Internal)'] = "Chi2 error (e.g. low counts)"
+            else:
+                result_dict['Chi2_Interpretation (Internal)'] = "Insufficient distinct categories for Chi2"
+        
+        category_shift_results.append(result_dict)
+
+    shift_df = pd.DataFrame(category_shift_results)
+    if not shift_df.empty:
+        shift_df = shift_df.drop_duplicates(subset=['Cluster']).set_index('Cluster')
+    return shift_df
