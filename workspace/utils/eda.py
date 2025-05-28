@@ -1,5 +1,4 @@
 import seaborn as sns
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -14,8 +13,12 @@ from sklearn.covariance import EllipticEnvelope
 
 from scipy.stats import skew, kurtosis
 from scipy import stats
+
 from statsmodels.stats.proportion import proportion_confint
 
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 def eda_vis(X, y, task_type):
     print("📊 Target Column Summary:")
@@ -662,3 +665,120 @@ def eda_vis_v2(X,y):
         plt.show()
 
     print("--- Finished generating all plots. ---")
+
+
+
+def plot_y_bins_rolling_histogram(
+    y_target_df,
+    bin_edges,
+    bin_centers,
+    window_step=7,
+    first_n_rows=150,
+    title="Rolling Histogram of Next-30d Return Distribution",
+    figsize_base=12,
+    width_scale=1.8,
+    bar_alpha=0.7,
+    vmin=-0.1,
+    vmax=0.1
+):
+    """
+    Plot a rolling histogram and expected value summary from binned target returns.
+    """
+    # Calculate bin centers
+    bin_centers = []
+    for i in range(len(bin_edges)-1):
+        if np.isinf(bin_edges[i]):
+            left = bin_edges[i+1] - 0.01
+        else:
+            left = bin_edges[i]
+        if np.isinf(bin_edges[i+1]):
+            right = bin_edges[i] + 0.01
+        else:
+            right = bin_edges[i+1]
+        bin_centers.append(0.5 * (left + right))
+    
+    step = window_step
+    y_target_short = y_target_df.iloc[:first_n_rows]
+    dates = y_target_short.index
+    window_dates = [str(dates[i].date()) for i in range(0, len(dates), step)]
+    
+    histograms = []
+    expected_vals = []
+    for i in range(0, len(y_target_short), step):
+        window = y_target_short.iloc[i:i+step]
+        hist = window.mean(axis=0)
+        histograms.append(hist.values)
+        exp_val = np.dot(hist.values, bin_centers)
+        expected_vals.append(exp_val)
+    histograms = np.array(histograms)
+    expected_vals = np.array(expected_vals)
+    
+    num_windows = histograms.shape[0]
+    x = np.arange(num_windows)
+    
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(max(figsize_base, num_windows//2), 5), 
+        gridspec_kw={"height_ratios": [4, 0.7]}, sharex=True
+    )
+    
+    # Histogram row (top)
+    colors = []
+    for c in bin_centers:
+        if c < 0:
+            colors.append('firebrick')
+        elif c == 0:
+            colors.append('gray')
+        else:
+            colors.append('forestgreen')
+    
+    bar_height = (bin_centers[1] - bin_centers[0]) * 0.55
+    
+    for i in range(num_windows):
+        ax1.barh(
+            y=bin_centers,
+            width=histograms[i, :] * width_scale,
+            left=i,
+            height=bar_height,
+            color=colors,
+            alpha=bar_alpha,
+            edgecolor='k'
+        )
+    
+    ax1.set_ylabel('Bin center: next-30d return (%)')
+    ax1.set_title(title)
+    ax1.set_yticks(bin_centers)
+    ax1.set_yticklabels([f"{c*100:.1f}%" for c in bin_centers])
+    ax1.axhline(y=0, color='black', linestyle='--', linewidth=1.2, alpha=0.8, zorder=1)
+    ax1.set_xlim(-0.5, num_windows - 0.5)
+    
+    # Expected value row (bottom)
+    norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+    cmap = plt.cm.get_cmap('RdYlGn')  # Red-Yellow-Green
+    
+    for i in range(num_windows):
+        ev = expected_vals[i]
+        color = cmap(norm(ev)) if not np.isnan(ev) else 'lightgray'
+        rect = ax2.bar(i, 1, color=color, width=1.0, edgecolor='none')
+        if not np.isnan(ev):
+            ax2.text(i, 0.5, f"{ev*100:.2f}%", va='center', ha='center', fontsize=9, color='black')
+    
+    ax2.set_yticks([])
+    ax2.set_ylabel("E[ret]")
+    ax2.set_xlim(-0.5, num_windows - 0.5)
+    ax2.set_ylim(0, 1)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(window_dates, rotation=90, fontsize=9)
+    ax2.set_xlabel('Date (window start)')
+    
+    # Add colorbar as legend for expected value
+    divider = make_axes_locatable(ax2)
+    cax = divider.append_axes('right', size='2.5%', pad=0.15)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
+    cbar.set_label('Expected Value (% return)')
+    cbar.set_ticks([vmin, 0, vmax])
+    cbar.set_ticklabels([f"{vmin*100:.1f}%", "0%", f"{vmax*100:.1f}%"])
+    
+    plt.tight_layout()
+    plt.show()

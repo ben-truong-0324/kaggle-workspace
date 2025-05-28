@@ -778,3 +778,117 @@ def run_custom_etl_generator(
             
     del main_data_gen
     print(f"\nFinished yielding processed chunks. Total yielded: {chunks_yielded_count}")
+
+
+
+
+def calc_y_target(df, price_col, bin_labels, num_bins, horizon, bin_edges):
+    y_target_list = []
+    
+    
+    missing = df[price_col].isna().sum()
+    if missing > 0:
+        df[price_col] = df[price_col].interpolate(method="linear", limit_direction="both")
+        remaining = df[price_col].isna().sum()
+        if remaining > 0:
+            print(f"⚠️ Still {remaining} instances of {price_col} missing after interpolate! These will remain NaN.")
+    returns_arr = df[price_col].values
+    for i in range(len(df)):
+        if len(returns_arr) - i > horizon:
+            future_prices = returns_arr[i+1 : i+1+horizon]
+        else: 
+            future_prices = []
+        # Defensive: skip if <30day data collection
+        if len(future_prices) == 0:
+            y_target_list.append(np.full(num_bins, np.nan))
+            continue
+        # Compute returns to current date
+        returns = (future_prices - returns_arr[i]) / returns_arr[i]
+        # Bin the returns
+        freq, _ = np.histogram(returns, bins=bin_edges)
+        # Normalize to sum to 1 (probability vector)
+        if freq.sum() > 0 :
+            freq = freq / freq.sum() 
+        else:
+            print(f"fillna here at {i} due to freq.sum <=0 ")
+            np.full(num_bins, np.nan)
+        y_target_list.append(freq)
+    # Convert to DataFrame for easy inspection
+    y_target_df = pd.DataFrame(y_target_list, index=df.index, columns=bin_labels)
+    return y_target_df
+
+
+def get_macro_cols(df, ohlc_cols):
+    """
+    Identifies macro columns: FRED codes and sector price columns (endswith '_price')
+    by skips price columns like 'Adj Close', 'Open', 'High', etc.
+    """
+    macro_cols = [
+        col for col in df.columns
+        if (col not in ohlc_cols)
+        and (col.endswith('_price') or col.isupper() or col.replace('_', '').isalnum())
+    ]
+    return macro_cols
+    
+def engineer_macro_features(input_df: pd.DataFrame, ohlc_cols) -> pd.DataFrame:
+    """
+    Engineers new features from macro-economic columns in a DataFrame.
+
+    Args:
+        input_df: Pandas DataFrame containing the macro_cols.
+
+    Returns:
+        Pandas DataFrame with the new engineered features added.
+        The original DataFrame passed is not modified.
+    """
+    df = input_df.copy(deep=True)
+    macro_cols = get_macro_cols(input_df, ohlc_cols)
+    feature_dict = {}
+    for macro in macro_cols:
+        if macro in df.columns:
+            ma_5d = df[macro].rolling(5, min_periods=1).mean()
+            ma_30d = df[macro].rolling(30, min_periods=1).mean()
+            ma_200d = df[macro].rolling(200, min_periods=1).mean()
+
+            feature_dict[f"{macro}_diff_to_5d_ma"] = df[macro] - ma_5d
+            feature_dict[f"{macro}_diff_to_30d_ma"] = df[macro] - ma_30d
+            feature_dict[f"{macro}_diff_to_200d_ma"] = df[macro] - ma_200d
+
+            denominator_5d = df[macro].replace({0: np.nan})
+            denominator_30d = df[macro].replace({0: np.nan})
+            denominator_200d = df[macro].replace({0: np.nan})
+
+            feature_dict[f"{macro}_ratio_to_5d_ma"] = (df[macro] - ma_5d) / denominator_5d
+            feature_dict[f"{macro}_ratio_to_30d_ma"] = (df[macro] - ma_30d) / denominator_30d
+            feature_dict[f"{macro}_ratio_to_200d_ma"] = (df[macro] - ma_200d) / denominator_200d
+        else:
+            print(f"Warning: Macro column '{macro}' not found in DataFrame. Skipping feature engineering for it.")
+
+    # Batch add all new features at once for max speed and no fragmentation
+    new_features = pd.DataFrame(feature_dict, index=df.index)
+    df = pd.concat([df, new_features], axis=1)
+    return df
+
+def ffill_macro_columns(df, ohlc_cols):
+    """
+    Forward-fills only the macro (FRED + sector price) columns in the DataFrame.
+    Returns a copy with those columns forward-filled.
+    """
+    out = df.copy()
+    macro_cols = get_macro_cols(out, ohlc_cols)
+    out[macro_cols] = out[macro_cols].ffill()
+    out[macro_cols] = out[macro_cols].apply(pd.to_numeric, errors='coerce')  
+    return out
+
+
+def check_na_rows(df, perc_nan_thres=5, sample_size=100):
+    n_before = df.shape[0]
+    n_after = df.dropna().shape[0]
+    print(f"🧮 {n_after}/{n_before} rows would remain after {n_after - n_before} rows dropna ({100 * n_after/n_before:.2f}%)")
+    for col in df.columns:
+        # perc_nan_thres = 5
+        if df[col].isna().sum() > df.shape[0] * perc_nan_thres/100:
+            print(f"Column {col} has NaN more than {perc_nan_thres}% of dataset")
+            print(df[col].isna().sum())
+            nan_idx = df.index[df[col].isna()]
+            print(f"Sample indices with NaN in '{col}': {list(nan_idx[:sample_size])}")
