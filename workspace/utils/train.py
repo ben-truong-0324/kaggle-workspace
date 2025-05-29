@@ -435,7 +435,7 @@ def train_nn_model(
             final_y_pred_probas_for_roc = None # Main output is already the probability vector
         else: # Should have been caught earlier
             raise ValueError(f"Unsupported task_type for final prediction processing: {task_type}")
-
+    #is model still on GPU to(Device)?
     return model, final_y_pred_main, final_y_pred_probas_for_roc, y_preds_per_epoch_list
 
 

@@ -884,6 +884,7 @@ def ffill_macro_columns(df, ohlc_cols):
 
 
 def check_na_rows(df, perc_nan_thres=5, sample_size=100):
+    print(type(df))
     n_before = df.shape[0]
     n_after = df.dropna().shape[0]
     print(f"🧮 {n_after}/{n_before} rows would remain after {n_after - n_before} rows dropna ({100 * n_after/n_before:.2f}%)")

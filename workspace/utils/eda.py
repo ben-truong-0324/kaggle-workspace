@@ -78,9 +78,9 @@ def eda_vis(X, y, task_type):
         plt.show()
     
     # === Boxplots ===
-    print("Boxplots by Target:")
+    print("Boxplots by Target (only showing 12 features):")
     
-    num_cols = X.select_dtypes(include=np.number).columns[:9]  # Limit to 9
+    num_cols = X.select_dtypes(include=np.number).columns[:12]  # Limit to 12
     n_cols = 3
     n_rows = int(np.ceil(len(num_cols) / n_cols))
     
@@ -218,11 +218,11 @@ def feature_eda_vis(X, y, task_type):
 
                 # Plot 3: Deviation from 50% for classification
                 if "classification" in task_type:
-                    target_true = y == 1  # assumes binary target
+                    target_true = y # == 1  # assumes binary target
                     df_temp = pd.DataFrame({col: x_binned, "target": target_true})
                     bin_stats = df_temp.groupby(col)["target"].agg(["count", "sum"])
                     bin_stats["rate"] = bin_stats["sum"] / bin_stats["count"]
-                    bin_stats["deviation"] = (bin_stats["rate"] / 0.5) * 100 - 100
+                    bin_stats["deviation"] = (bin_stats["rate"] ) * 100 - 100
 
                     deviations = bin_stats["deviation"]
                     # colors = plt.cm.seismic((deviations - deviations.min()) / (deviations.max() - deviations.min()))
@@ -356,32 +356,10 @@ def feature_eda_vis(X, y, task_type):
 
 
 def eda_vis_v2(X,y):
+    """
+    #  X and y are pandas DataFrames/Series 
+    """
     
-    # Assume X and y are pandas DataFrames/Series as described by the user.
-    # For demonstration, let's create some sample data if X and y are not defined
-    # (Remove or comment this out if you have your actual X and y)
-    if 'X' not in locals() or 'y' not in locals():
-        print("Generating sample X and y for demonstration purposes...")
-        n_samples = 200
-        X_data = {
-            'HomePlanet': np.random.choice(['Earth', 'Europa', 'Mars', 'PlanetX', 'PlanetY'], size=n_samples), # Added more categories
-            'CryoSleep': np.random.choice([True, False, np.nan], size=n_samples, p=[0.25, 0.7, 0.05]), # Added NaNs
-            'Age': np.random.normal(loc=30, scale=10, size=n_samples).clip(0, 80),
-            'RoomService': np.random.exponential(scale=100, size=n_samples).clip(0, 2000) * np.random.choice([0,1, np.nan], size=n_samples, p=[0.35,0.55, 0.1]), # Some zeros and NaNs
-            'VIP': np.random.choice([True, False, np.nan], size=n_samples, p=[0.05, 0.85, 0.1]) # With NaNs
-        }
-        X = pd.DataFrame(X_data)
-        X['Age'] = X['Age'].astype(float).fillna(X['Age'].median()).astype(int) # Handle potential NaNs from clip then fill
-        X['RoomService'] = X['RoomService'].astype(float)
-        
-        # Simulate some dependency for y
-        y_score = X['Age'] * -0.1 + X['RoomService'].fillna(0) * 0.01 + \
-                (X['HomePlanet'] == 'Europa').astype(int) * 20 + \
-                X['CryoSleep'].fillna(False).astype(int) * 30 # Handle NaNs in CryoSleep for scoring
-        y_prob = 1 / (1 + np.exp(- (y_score - y_score.mean()) / y_score.std() )) # Sigmoid
-        y = pd.Series(np.random.binomial(1, y_prob, size=n_samples).astype(bool), name='Transported')
-
-
     # --- Data Preparation ---
     y_named = y.copy()
     if not hasattr(y_named, 'name') or y_named.name is None:
