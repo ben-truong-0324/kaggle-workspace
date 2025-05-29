@@ -1055,11 +1055,32 @@ def engineer_technical_indicators_relative(input_df: pd.DataFrame,
         bb_lower_abs = bb_mid_abs - bb_std_dev * bb_std_abs
 
         # Bandwidth (relative width of bands)
-        df[f'bb_bandwidth_{bb_period}'] = (bb_upper_abs - bb_lower_abs) / (bb_mid_abs + epsilon)
+        # df[f'bb_bandwidth_{bb_period}'] = (bb_upper_abs - bb_lower_abs) / (bb_mid_abs + epsilon)
 
-        # %B (price position relative to bands)
+        # # %B (price position relative to bands)
+        # bb_range = bb_upper_abs - bb_lower_abs
+        # df[f'bb_percent_b_{bb_period}'] = (current_price - bb_lower_abs) / (bb_range + epsilon)
+        # Debug intermediate calculations
+        print(f"Debug: bb_mid_abs head (first 3): \n{bb_mid_abs.head(3)}")
+        print(f"Debug: bb_std_abs head (first 3): \n{bb_std_abs.head(3)}")
+
+        bandwidth_col = f'bb_bandwidth_{bb_period}'
+        percent_b_col = f'bb_percent_b_{bb_period}'
+
+        epsilon = 1e-8  # Small value to avoid division by zero
         bb_range = bb_upper_abs - bb_lower_abs
-        df[f'bb_percent_b_{bb_period}'] = (current_price - bb_lower_abs) / (bb_range + epsilon)
+        df[bandwidth_col] = (bb_upper_abs - bb_lower_abs) / (bb_mid_abs + epsilon)
+        # %B (price position relative to bands)
+        df[percent_b_col] = (current_price - bb_lower_abs) / (bb_range + epsilon)
+        # Debug: Check for NaNs or unusual values
+        #print(f"[DEBUG] Head of %B column before clipping:\n{df[percent_b_col].head()}")
+        # Common clipping to [0, 1] range
+        df[percent_b_col] = df[percent_b_col].clip(0, 1)
+
+        # Debug: Check after clipping
+        #print(f"[DEBUG] Head of %B column after clipping:\n{df[percent_b_col].head()}")
+
+
         # If range is 0, price is likely equal to lower and upper band.
         # If price == lower == upper, (P-L)/(U-L) = 0/0 -> NaN. %B can be set to 0.5.
         # If P > L and U-L=0, inf. If P < L and U-L=0, -inf.

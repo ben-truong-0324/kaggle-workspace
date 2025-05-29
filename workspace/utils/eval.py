@@ -669,6 +669,406 @@ def evaluate_model_predictions(
 
 
 
+# def run_trading_simulation(
+#     price_test_series: pd.Series,
+#     y_pred_proba_test: np.ndarray,
+#     cluster_mean_ev_mapping: pd.Series,
+#     model_classes_ordered: list,
+#     initial_portfolio_value: float = 100000.0,
+#     trade_size: float = 3000.0,
+#     hold_apr: float = 0.05,
+#     ev_profit_threshold: float = 0.001,
+#     position_hold_days: int = 30,
+#     model_name: str = "Model Strategy",
+#     periods_per_year: int = 252,
+#     rolling_window_days: int = 62 # Parameter for rolling metrics
+# ) -> tuple[pd.DataFrame, dict, dict]:
+
+#     num_total_trading_days = len(price_test_series)
+#     if num_total_trading_days == 0: return pd.DataFrame(), {}, {}
+#     if len(y_pred_proba_test) != num_total_trading_days:
+#         num_total_trading_days = min(num_total_trading_days, len(y_pred_proba_test))
+#         print("num_total_trading_days not same as y_pred_proba_test length")
+#         if num_total_trading_days == 0: 
+#             print("error, price_test_series empty. returning null")
+#             return pd.DataFrame(), {}, {}
+#         price_test_series = price_test_series.iloc[:num_total_trading_days]
+#         y_pred_proba_test = y_pred_proba_test[:num_total_trading_days]
+
+#     # Define strategy names
+#     strat_top1_name = f'{model_name} (Top-1)'
+#     strat_top2_consensus_name = f'{model_name} (Top-2 Consensus)'
+#     strat_cum90_name = f'{model_name} (Cum@90)'
+#     strat_cum75_name = f'{model_name} (Cum@75)'
+#     strat_cum60_name = f'{model_name} (Cum@60)'
+#     strat_perfect_name = 'Perfect Foresight'
+#     strat_benchmark_name = 'Hold Benchmark'
+    
+#     all_strategy_names_trading = [
+#         strat_top1_name, strat_top2_consensus_name, strat_cum90_name,
+#         strat_cum75_name, strat_cum60_name, strat_perfect_name
+#     ]
+#     all_portfolio_columns = all_strategy_names_trading + [strat_benchmark_name]
+
+#     portfolio_values = pd.DataFrame(
+#         index=price_test_series.index,
+#         columns=all_portfolio_columns
+#     )
+#     portfolio_values.iloc[:, :] = initial_portfolio_value
+    
+#     daily_rate_hold = 0.0 
+#     if num_total_trading_days > 0 and periods_per_year > 0 and hold_apr is not None:
+#         daily_rate_hold = (1.0 + hold_apr)**(1.0 / periods_per_year) - 1.0
+#         current_hold_val = initial_portfolio_value
+#         benchmark_col_loc = portfolio_values.columns.get_loc(strat_benchmark_name)
+#         for t_idx in range(num_total_trading_days):
+#             current_hold_val *= (1 + daily_rate_hold)
+#             portfolio_values.iloc[t_idx, benchmark_col_loc] = current_hold_val
+#     else:
+#         portfolio_values[strat_benchmark_name] = initial_portfolio_value
+
+#     open_positions_top1 = []
+#     open_positions_top2_consensus = []
+#     open_positions_cum90 = []
+#     open_positions_cum75 = []
+#     open_positions_cum60 = []
+#     open_positions_perfect = []
+
+#     trade_stats_top1 = {'win': 0, 'loss': 0, 'breakeven': 0, 'total': 0}
+#     trade_stats_top2_consensus = {'win': 0, 'loss': 0, 'breakeven': 0, 'total': 0}
+#     trade_stats_cum90 = {'win': 0, 'loss': 0, 'breakeven': 0, 'total': 0}
+#     trade_stats_cum75 = {'win': 0, 'loss': 0, 'breakeven': 0, 'total': 0}
+#     trade_stats_cum60 = {'win': 0, 'loss': 0, 'breakeven': 0, 'total': 0}
+#     trade_stats_perfect = {'win': 0, 'loss': 0, 'breakeven': 0, 'total': 0}
+
+#     trade_actions_log_top1 = []
+#     trade_actions_log_top2_consensus = []
+#     trade_actions_log_cum90 = []
+#     trade_actions_log_cum75 = []
+#     trade_actions_log_cum60 = []
+#     trade_actions_log_perfect = []
+
+#     buy_short_stats = {name: {"buys_wins": 0, "buys_total": 0, "shorts_wins": 0, "shorts_total": 0} for name in all_strategy_names_trading}
+
+#     idx_to_class_map = {i: label for i, label in enumerate(model_classes_ordered)}
+#     if y_pred_proba_test.shape[1] != len(model_classes_ordered):
+#         print(f"CRITICAL WARNING for {model_name}: y_pred_proba_test columns ({y_pred_proba_test.shape[1]}) "
+#               f"!= model_classes_ordered length ({len(model_classes_ordered)}). Signal generation flawed.")
+
+#     positive_cluster_indices = []
+#     negative_cluster_indices = []
+#     if cluster_mean_ev_mapping is not None:
+#         for i, class_label in idx_to_class_map.items():
+#             mean_ev = cluster_mean_ev_mapping.get(class_label, 0)
+#             if mean_ev > ev_profit_threshold:
+#                 positive_cluster_indices.append(i)
+#             elif mean_ev < -ev_profit_threshold:
+#                 negative_cluster_indices.append(i)
+    
+#     def get_strategy_artifacts(strat_name_key):
+#         if strat_name_key == strat_top1_name: return open_positions_top1, trade_stats_top1, trade_actions_log_top1
+#         if strat_name_key == strat_top2_consensus_name: return open_positions_top2_consensus, trade_stats_top2_consensus, trade_actions_log_top2_consensus
+#         if strat_name_key == strat_cum90_name: return open_positions_cum90, trade_stats_cum90, trade_actions_log_cum90
+#         if strat_name_key == strat_cum75_name: return open_positions_cum75, trade_stats_cum75, trade_actions_log_cum75
+#         if strat_name_key == strat_cum60_name: return open_positions_cum60, trade_stats_cum60, trade_actions_log_cum60
+#         if strat_name_key == strat_perfect_name: return open_positions_perfect, trade_stats_perfect, trade_actions_log_perfect
+#         return None, None, None
+
+#     for t in range(num_total_trading_days):
+#         current_price_today = price_test_series.iloc[t]
+#         current_date = price_test_series.index[t]
+
+#         if pd.isna(current_price_today):
+#             if t > 0:
+#                 portfolio_values.iloc[t, :] = portfolio_values.iloc[t-1, :]
+#                 benchmark_col_loc_nan = portfolio_values.columns.get_loc(strat_benchmark_name)
+#                 if daily_rate_hold != 0.0 : 
+#                     portfolio_values.iloc[t, benchmark_col_loc_nan] = portfolio_values.iloc[t-1, benchmark_col_loc_nan] * (1 + daily_rate_hold)
+#             for strat_name_for_nan_처리 in all_strategy_names_trading:
+#                 pos_list, current_trade_stats, current_trade_log = get_strategy_artifacts(strat_name_for_nan_처리)
+#                 if pos_list is None: continue
+#                 for pos in pos_list[:]:
+#                     pos['days_left_to_unwind'] -= 1
+#                     if pos['days_left_to_unwind'] <= 0:
+#                         pnl_for_stats_on_close = pos.get('accumulated_pnl_for_stats_calc', 0)
+#                         if strat_name_for_nan_처리 == strat_perfect_name and 'accumulated_pnl_for_stats_calc' not in pos :
+#                              pnl_for_stats_on_close = pos.get('pnl_for_stats',0)
+#                         if current_trade_stats: 
+#                             current_trade_stats['total'] += 1
+#                             if pnl_for_stats_on_close > 1e-6: current_trade_stats['win'] += 1
+#                             elif pnl_for_stats_on_close < -1e-6: current_trade_stats['loss'] += 1
+#                             else: current_trade_stats['breakeven'] += 1
+                        
+#                         strat_buy_short_stats = buy_short_stats[strat_name_for_nan_처리]
+#                         is_long = pos['direction'] == 1
+#                         if is_long:
+#                             strat_buy_short_stats['buys_total'] += 1
+#                             if pnl_for_stats_on_close > 1e-6: strat_buy_short_stats['buys_wins'] += 1
+#                         else: 
+#                             strat_buy_short_stats['shorts_total'] += 1
+#                             if pnl_for_stats_on_close > 1e-6: strat_buy_short_stats['shorts_wins'] += 1
+                        
+#                         current_trade_log.append({
+#                             "type": "close", "date": current_date, "pnl": pnl_for_stats_on_close,
+#                             "original_pos_type": "long" if is_long else "short",
+#                             "open_date": pos['open_date'], "entry_price": pos['entry_price'],
+#                             "exit_price": np.nan, 
+#                             "amount_traded": pos.get('initial_shares', trade_size / pos.get('entry_price_valid_day', 1)) * pos.get('entry_price_valid_day', pos['entry_price'])
+#                         })
+#                         pos_list.remove(pos)
+#             continue 
+
+#         # --- P&L Processing for NON-NAN days (condensed for brevity, logic is the same as your last provided version) ---
+#         for strat_name_key in all_strategy_names_trading:
+#             pos_list, current_trade_stats, current_trade_log = get_strategy_artifacts(strat_name_key)
+#             if pos_list is None: continue # Should not happen for these names
+
+#             col_loc = portfolio_values.columns.get_loc(strat_name_key)
+#             current_portfolio_val = portfolio_values.iloc[t-1, col_loc] if t > 0 else initial_portfolio_value
+#             daily_pnl = 0
+#             for pos in pos_list[:]:
+#                 pnl_this_day_for_portion = pos['shares_to_unwind_daily'] * (current_price_today - pos['entry_price']) * pos['direction']
+#                 daily_pnl += pnl_this_day_for_portion
+#                 pos['accumulated_pnl_for_stats_calc'] += pnl_this_day_for_portion
+#                 pos['days_left_to_unwind'] -= 1
+#                 if pos['days_left_to_unwind'] <= 0:
+#                     pnl_on_close = pos['accumulated_pnl_for_stats_calc']
+#                     current_trade_stats['total'] += 1
+#                     if pnl_on_close > 1e-6: current_trade_stats['win'] += 1
+#                     elif pnl_on_close < -1e-6: current_trade_stats['loss'] += 1
+#                     else: current_trade_stats['breakeven'] += 1
+                    
+#                     strat_buy_short_stats = buy_short_stats[strat_name_key]
+#                     is_long = pos['direction'] == 1
+#                     if is_long:
+#                         strat_buy_short_stats['buys_total'] += 1
+#                         if pnl_on_close > 1e-6: strat_buy_short_stats['buys_wins'] += 1
+#                     else: 
+#                         strat_buy_short_stats['shorts_total'] += 1
+#                         if pnl_on_close > 1e-6: strat_buy_short_stats['shorts_wins'] += 1
+
+#                     current_trade_log.append({
+#                         "type": "close", "pnl": pnl_on_close,
+#                         "original_pos_type": "long" if is_long else "short",
+#                         "open_date": pos['open_date'], "date": current_date,
+#                         "entry_price": pos['entry_price'], "exit_price": current_price_today,
+#                         "amount_traded": pos['initial_shares'] * pos['entry_price']
+#                     })
+#                     pos_list.remove(pos)
+#             portfolio_values.iloc[t, col_loc] = current_portfolio_val + daily_pnl
+        
+#         # --- Signal Generation & Position Initiation (condensed for brevity, logic is the same as your last provided version) ---
+#         entry_price_today = current_price_today 
+#         if pd.isna(entry_price_today) or entry_price_today == 0: continue
+#         shares_to_trade = trade_size / entry_price_today if entry_price_today > 0 else 0
+#         shares_to_unwind_daily_new_trade = shares_to_trade / position_hold_days if position_hold_days > 0 else shares_to_trade
+#         if shares_to_trade == 0 : continue
+
+#         def new_pos_dict(direction_val, entry_price_val, shares_unwind_val, initial_shares_val):
+#             return {'entry_price': entry_price_val, 'entry_price_valid_day': entry_price_val,
+#                     'shares_to_unwind_daily': shares_unwind_val, 'direction': direction_val, 
+#                     'days_left_to_unwind': position_hold_days, 'accumulated_pnl_for_stats_calc': 0.0,
+#                     'open_date': current_date, 'initial_shares': initial_shares_val}
+#         def new_open_trade_log_entry(direction_val, entry_price_val):
+#             return {"type": "open", "amount": trade_size, 
+#                     "position_type": "long" if direction_val == 1 else "short",
+#                     "date": current_date, "price": entry_price_val}
+
+#         # Perfect Foresight Signal
+#         if t + position_hold_days < num_total_trading_days:
+#             exit_price_window = price_test_series.iloc[t+1 : t+1+position_hold_days]
+#             if not (len(exit_price_window) < position_hold_days or exit_price_window.isna().any()):
+#                 avg_exit_price = exit_price_window.mean()
+#                 if not (pd.isna(avg_exit_price) or avg_exit_price == 0):
+#                     actual_return_factor_for_stats = (avg_exit_price / entry_price_today)
+#                     direction_perfect, expected_total_pnl_perfect = 0,0
+#                     if actual_return_factor_for_stats > (1 + ev_profit_threshold): direction_perfect, expected_total_pnl_perfect = 1, trade_size * (actual_return_factor_for_stats - 1)
+#                     elif actual_return_factor_for_stats < (1 - ev_profit_threshold): direction_perfect, expected_total_pnl_perfect = -1, trade_size * (1 - actual_return_factor_for_stats)
+#                     if direction_perfect != 0:
+#                         pos_data = new_pos_dict(direction_perfect, entry_price_today, shares_to_unwind_daily_new_trade, shares_to_trade)
+#                         pos_data['pnl_for_stats'] = expected_total_pnl_perfect 
+#                         open_positions_perfect.append(pos_data)
+#                         trade_actions_log_perfect.append(new_open_trade_log_entry(direction_perfect, entry_price_today))
+#         # Top-1 Signal
+#         top1_pred_idx = np.argmax(y_pred_proba_test[t])
+#         if top1_pred_idx < len(idx_to_class_map):
+#             top1_pred_label = idx_to_class_map.get(top1_pred_idx)
+#             if top1_pred_label is not None and cluster_mean_ev_mapping is not None:
+#                 top1_pred_mean_ev = cluster_mean_ev_mapping.get(top1_pred_label, 0)
+#                 direction_top1 = 0
+#                 if top1_pred_mean_ev > ev_profit_threshold: direction_top1 = 1
+#                 elif top1_pred_mean_ev < -ev_profit_threshold: direction_top1 = -1
+#                 if direction_top1 != 0:
+#                     open_positions_top1.append(new_pos_dict(direction_top1, entry_price_today, shares_to_unwind_daily_new_trade, shares_to_trade))
+#                     trade_actions_log_top1.append(new_open_trade_log_entry(direction_top1, entry_price_today))
+#         # Top-2 Consensus Signal
+#         if y_pred_proba_test.shape[1] >= 2:
+#             sorted_indices_today = np.argsort(y_pred_proba_test[t])[::-1]
+#             top1_idx_combo, top2_idx_combo = sorted_indices_today[0], sorted_indices_today[1]
+#             if top1_idx_combo < len(idx_to_class_map) and top2_idx_combo < len(idx_to_class_map):
+#                 l1c, l2c = idx_to_class_map.get(top1_idx_combo), idx_to_class_map.get(top2_idx_combo)
+#                 if l1c is not None and l2c is not None and cluster_mean_ev_mapping is not None:
+#                     ev1c, ev2c = cluster_mean_ev_mapping.get(l1c,0), cluster_mean_ev_mapping.get(l2c,0)
+#                     cat1c, cat2c = get_ev_category(ev1c, ev_profit_threshold), get_ev_category(ev2c, ev_profit_threshold)
+#                     direction_top2_consensus = 0
+#                     if cat1c == "Profitable" and cat2c == "Profitable": direction_top2_consensus = 1
+#                     elif cat1c == "Loss" and cat2c == "Loss": direction_top2_consensus = -1
+#                     if direction_top2_consensus != 0:
+#                         open_positions_top2_consensus.append(new_pos_dict(direction_top2_consensus, entry_price_today, shares_to_unwind_daily_new_trade, shares_to_trade))
+#                         trade_actions_log_top2_consensus.append(new_open_trade_log_entry(direction_top2_consensus, entry_price_today))
+#         # Cumulative Probability Signals
+#         proba_today = y_pred_proba_test[t]
+#         sum_positive_proba = np.sum(proba_today[positive_cluster_indices]) if len(positive_cluster_indices) > 0 else 0
+#         sum_negative_proba = np.sum(proba_today[negative_cluster_indices]) if len(negative_cluster_indices) > 0 else 0
+#         direction_cum90, direction_cum75, direction_cum60 = 0,0,0
+#         if sum_positive_proba > 0.90: direction_cum90 = 1
+#         elif sum_negative_proba > 0.90: direction_cum90 = -1
+#         if direction_cum90 != 0: 
+#             open_positions_cum90.append(new_pos_dict(direction_cum90, entry_price_today, shares_to_unwind_daily_new_trade, shares_to_trade))
+#             trade_actions_log_cum90.append(new_open_trade_log_entry(direction_cum90, entry_price_today))
+#         if sum_positive_proba > 0.75: direction_cum75 = 1
+#         elif sum_negative_proba > 0.75: direction_cum75 = -1
+#         if direction_cum75 != 0:
+#             open_positions_cum75.append(new_pos_dict(direction_cum75, entry_price_today, shares_to_unwind_daily_new_trade, shares_to_trade))
+#             trade_actions_log_cum75.append(new_open_trade_log_entry(direction_cum75, entry_price_today))
+#         if sum_positive_proba > 0.60: direction_cum60 = 1
+#         elif sum_negative_proba > 0.60: direction_cum60 = -1
+#         if direction_cum60 != 0:
+#             open_positions_cum60.append(new_pos_dict(direction_cum60, entry_price_today, shares_to_unwind_daily_new_trade, shares_to_trade))
+#             trade_actions_log_cum60.append(new_open_trade_log_entry(direction_cum60, entry_price_today))
+
+#     # --- Calculate Performance Metrics ---
+#     metrics = {}
+#     epsilon_std = 1e-9 
+#     all_trade_actions = { 
+#         strat_top1_name: trade_actions_log_top1, strat_top2_consensus_name: trade_actions_log_top2_consensus,
+#         strat_cum90_name: trade_actions_log_cum90, strat_cum75_name: trade_actions_log_cum75,
+#         strat_cum60_name: trade_actions_log_cum60, strat_perfect_name: trade_actions_log_perfect
+#     }
+    
+#     # Convert trade action dates to datetime if they are not already (for proper comparison)
+#     for strat_key in all_trade_actions:
+#         for trade in all_trade_actions[strat_key]:
+#             if 'date' in trade and not isinstance(trade['date'], pd.Timestamp):
+#                 try: trade['date'] = pd.to_datetime(trade['date'])
+#                 except: pass # ignore if conversion fails
+#             if 'open_date' in trade and not isinstance(trade['open_date'], pd.Timestamp):
+#                 try: trade['open_date'] = pd.to_datetime(trade['open_date'])
+#                 except: pass
+
+
+#     for strategy_col_name in portfolio_values.columns:
+#         final_value = portfolio_values[strategy_col_name].iloc[-1] if num_total_trading_days > 0 and not portfolio_values[strategy_col_name].empty else initial_portfolio_value
+#         total_return_pct = ((final_value / initial_portfolio_value) - 1) * 100 if initial_portfolio_value > 0 else 0
+        
+#         if portfolio_values[strategy_col_name].dropna().empty and initial_portfolio_value == 0 : strat_returns = pd.Series(dtype=float)
+#         elif portfolio_values[strategy_col_name].dropna().empty and initial_portfolio_value !=0 : strat_returns = pd.Series([0.0] * num_total_trading_days, index=price_test_series.index[:num_total_trading_days])
+#         else :
+#             temp_series_for_pct_change = pd.Series([initial_portfolio_value] + portfolio_values[strategy_col_name].tolist())
+#             strat_returns = temp_series_for_pct_change.pct_change().iloc[1:].fillna(0)
+#             strat_returns.index = price_test_series.index[:len(strat_returns)] # Ensure index alignment
+
+#         sharpe_ratio_all_time = np.nan
+#         if len(strat_returns) > 1 :
+#             std_dev = strat_returns.std()
+#             if std_dev > epsilon_std: sharpe_ratio_all_time = (strat_returns.mean() / std_dev) * np.sqrt(periods_per_year if periods_per_year > 0 else 252)
+#             elif strat_returns.mean() == 0 and std_dev <= epsilon_std : sharpe_ratio_all_time = 0.0
+#         elif len(strat_returns) <=1 and not strat_returns.empty and strat_returns.mean()==0 : sharpe_ratio_all_time = 0.0
+
+#         current_metrics = {
+#             'Final Portfolio Value': final_value, 'Total Return (%)': total_return_pct,
+#             'Sharpe Ratio (Annualized, All-Time)': sharpe_ratio_all_time,
+#             'Avg Daily Return (%)': strat_returns.mean() * 100 if not strat_returns.empty else 0,
+#             'Std Dev Daily Return (%)': strat_returns.std() * 100 if len(strat_returns) > 1 else 0,
+#         }
+        
+#         # Rolling Metrics (Sharpe, Long Win Rate, Short Win Rate)
+#         # Initialize a list to store dicts for each window's metrics
+#         rolling_metrics_details_list = []
+#         if not strat_returns.empty and len(strat_returns) >= rolling_window_days and rolling_window_days > 0:
+#             # Get the relevant trade log for the current strategy
+#             strategy_specific_trades = all_trade_actions.get(strategy_col_name, [])
+            
+#             for i in range(0, len(strat_returns) - rolling_window_days + 1, rolling_window_days):
+#                 window_returns = strat_returns.iloc[i : i + rolling_window_days]
+#                 window_start_date = window_returns.index[0]
+#                 window_end_date = window_returns.index[-1]
+                
+#                 # Rolling Sharpe
+#                 sharpe_window_val = np.nan
+#                 if len(window_returns) >= 2:
+#                     std_dev_window = window_returns.std()
+#                     mean_window = window_returns.mean()
+#                     if std_dev_window > epsilon_std: sharpe_window_val = (mean_window / std_dev_window) * np.sqrt(periods_per_year if periods_per_year > 0 else 252)
+#                     elif mean_window == 0 and std_dev_window <= epsilon_std : sharpe_window_val = 0.0
+                
+#                 # Rolling Long/Short Win Rates for this window
+#                 long_wins_window, long_total_window = 0, 0
+#                 short_wins_window, short_total_window = 0, 0
+                
+#                 if strategy_specific_trades: # Only if it's a trading strategy
+#                     # Filter trades that CLOSED within this window
+#                     # Ensure dates are comparable (Timestamp vs Timestamp)
+#                     window_start_date_ts = pd.to_datetime(window_start_date)
+#                     window_end_date_ts = pd.to_datetime(window_end_date)
+
+#                     for trade in strategy_specific_trades:
+#                         if trade['type'] == 'close':
+#                             # Ensure trade['date'] is a Timestamp for comparison
+#                             trade_close_date_ts = pd.to_datetime(trade['date'])
+#                             if window_start_date_ts <= trade_close_date_ts <= window_end_date_ts:
+#                                 is_profit = trade['pnl'] > 1e-6 # Using same threshold as overall stats
+#                                 if trade['original_pos_type'] == 'long':
+#                                     long_total_window += 1
+#                                     if is_profit: long_wins_window += 1
+#                                 elif trade['original_pos_type'] == 'short':
+#                                     short_total_window += 1
+#                                     if is_profit: short_wins_window += 1
+                                    
+#                 long_win_rate_window = (long_wins_window / long_total_window * 100) if long_total_window > 0 else 0
+#                 short_win_rate_window = (short_wins_window / short_total_window * 100) if short_total_window > 0 else 0
+
+#                 rolling_metrics_details_list.append({
+#                     "window_start_date": window_start_date.strftime('%Y-%m-%d') if isinstance(window_start_date, pd.Timestamp) else str(window_start_date),
+#                     "window_end_date": window_end_date.strftime('%Y-%m-%d') if isinstance(window_end_date, pd.Timestamp) else str(window_end_date),
+#                     "sharpe_ratio": sharpe_window_val,
+#                     "long_win_rate (%)": long_win_rate_window,
+#                     "total_long_trades_in_window": long_total_window,
+#                     "short_win_rate (%)": short_win_rate_window,
+#                     "total_short_trades_in_window": short_total_window,
+#                 })
+        
+#         current_metrics[f'Rolling {rolling_window_days}-Day Metrics'] = rolling_metrics_details_list
+#         # Optional: Calculate average of rolling metrics if desired
+#         if rolling_metrics_details_list:
+#             current_metrics[f'Avg Rolling {rolling_window_days}-Day Sharpe'] = np.nanmean([m['sharpe_ratio'] for m in rolling_metrics_details_list])
+#             current_metrics[f'Avg Rolling {rolling_window_days}-Day Long Win Rate (%)'] = np.nanmean([m['long_win_rate (%)'] for m in rolling_metrics_details_list])
+#             current_metrics[f'Avg Rolling {rolling_window_days}-Day Short Win Rate (%)'] = np.nanmean([m['short_win_rate (%)'] for m in rolling_metrics_details_list])
+
+
+#         trade_stats_map = {
+#             strat_top1_name: trade_stats_top1, strat_top2_consensus_name: trade_stats_top2_consensus,
+#             strat_cum90_name: trade_stats_cum90, strat_cum75_name: trade_stats_cum75,
+#             strat_cum60_name: trade_stats_cum60, strat_perfect_name: trade_stats_perfect
+#         }
+#         if strategy_col_name in trade_stats_map:
+#             stats = trade_stats_map[strategy_col_name]
+#             current_metrics.update({ 
+#                 'Total Trades': stats['total'], 'Win Rate (%)': (stats['win'] / stats['total'] * 100) if stats['total'] > 0 else 0,
+#                 'Loss Rate (%)': (stats['loss'] / stats['total'] * 100) if stats['total'] > 0 else 0,
+#                 'Breakeven Rate (%)': (stats['breakeven'] / stats['total'] * 100) if stats['total'] > 0 else 0,
+#             })
+#             if strategy_col_name in buy_short_stats: 
+#                 specific_buy_short_stats = buy_short_stats[strategy_col_name]
+#                 current_metrics['Buy Wins (%)'] = (specific_buy_short_stats['buys_wins'] / specific_buy_short_stats['buys_total'] * 100) if specific_buy_short_stats['buys_total'] > 0 else 0
+#                 current_metrics['Total Buy Trades'] = specific_buy_short_stats['buys_total']
+#                 current_metrics['Short Wins (%)'] = (specific_buy_short_stats['shorts_wins'] / specific_buy_short_stats['shorts_total'] * 100) if specific_buy_short_stats['shorts_total'] > 0 else 0
+#                 current_metrics['Total Short Trades'] = specific_buy_short_stats['shorts_total']
+#         metrics[strategy_col_name] = current_metrics
+            
+#     return portfolio_values, metrics, all_trade_actions
+
+
 def run_trading_simulation(
     price_test_series: pd.Series,
     y_pred_proba_test: np.ndarray,
@@ -681,7 +1081,7 @@ def run_trading_simulation(
     position_hold_days: int = 30,
     model_name: str = "Model Strategy",
     periods_per_year: int = 252,
-    rolling_window_days: int = 62 # Parameter for rolling metrics
+    rolling_window_days: int = 62 # Parameter for existing rolling metrics
 ) -> tuple[pd.DataFrame, dict, dict]:
 
     num_total_trading_days = len(price_test_series)
@@ -792,7 +1192,7 @@ def run_trading_simulation(
                     if pos['days_left_to_unwind'] <= 0:
                         pnl_for_stats_on_close = pos.get('accumulated_pnl_for_stats_calc', 0)
                         if strat_name_for_nan_처리 == strat_perfect_name and 'accumulated_pnl_for_stats_calc' not in pos :
-                             pnl_for_stats_on_close = pos.get('pnl_for_stats',0)
+                                pnl_for_stats_on_close = pos.get('pnl_for_stats',0)
                         if current_trade_stats: 
                             current_trade_stats['total'] += 1
                             if pnl_for_stats_on_close > 1e-6: current_trade_stats['win'] += 1
@@ -818,10 +1218,10 @@ def run_trading_simulation(
                         pos_list.remove(pos)
             continue 
 
-        # --- P&L Processing for NON-NAN days (condensed for brevity, logic is the same as your last provided version) ---
+        # --- P&L Processing for NON-NAN days ---
         for strat_name_key in all_strategy_names_trading:
             pos_list, current_trade_stats, current_trade_log = get_strategy_artifacts(strat_name_key)
-            if pos_list is None: continue # Should not happen for these names
+            if pos_list is None: continue 
 
             col_loc = portfolio_values.columns.get_loc(strat_name_key)
             current_portfolio_val = portfolio_values.iloc[t-1, col_loc] if t > 0 else initial_portfolio_value
@@ -857,7 +1257,7 @@ def run_trading_simulation(
                     pos_list.remove(pos)
             portfolio_values.iloc[t, col_loc] = current_portfolio_val + daily_pnl
         
-        # --- Signal Generation & Position Initiation (condensed for brevity, logic is the same as your last provided version) ---
+        # --- Signal Generation & Position Initiation ---
         entry_price_today = current_price_today 
         if pd.isna(entry_price_today) or entry_price_today == 0: continue
         shares_to_trade = trade_size / entry_price_today if entry_price_today > 0 else 0
@@ -891,7 +1291,7 @@ def run_trading_simulation(
                         trade_actions_log_perfect.append(new_open_trade_log_entry(direction_perfect, entry_price_today))
         # Top-1 Signal
         top1_pred_idx = np.argmax(y_pred_proba_test[t])
-        if top1_pred_idx < len(idx_to_class_map):
+        if top1_pred_idx < len(idx_to_class_map): # Check index bounds
             top1_pred_label = idx_to_class_map.get(top1_pred_idx)
             if top1_pred_label is not None and cluster_mean_ev_mapping is not None:
                 top1_pred_mean_ev = cluster_mean_ev_mapping.get(top1_pred_label, 0)
@@ -901,11 +1301,12 @@ def run_trading_simulation(
                 if direction_top1 != 0:
                     open_positions_top1.append(new_pos_dict(direction_top1, entry_price_today, shares_to_unwind_daily_new_trade, shares_to_trade))
                     trade_actions_log_top1.append(new_open_trade_log_entry(direction_top1, entry_price_today))
+        
         # Top-2 Consensus Signal
         if y_pred_proba_test.shape[1] >= 2:
             sorted_indices_today = np.argsort(y_pred_proba_test[t])[::-1]
             top1_idx_combo, top2_idx_combo = sorted_indices_today[0], sorted_indices_today[1]
-            if top1_idx_combo < len(idx_to_class_map) and top2_idx_combo < len(idx_to_class_map):
+            if top1_idx_combo < len(idx_to_class_map) and top2_idx_combo < len(idx_to_class_map): # Check index bounds
                 l1c, l2c = idx_to_class_map.get(top1_idx_combo), idx_to_class_map.get(top2_idx_combo)
                 if l1c is not None and l2c is not None and cluster_mean_ev_mapping is not None:
                     ev1c, ev2c = cluster_mean_ev_mapping.get(l1c,0), cluster_mean_ev_mapping.get(l2c,0)
@@ -916,6 +1317,7 @@ def run_trading_simulation(
                     if direction_top2_consensus != 0:
                         open_positions_top2_consensus.append(new_pos_dict(direction_top2_consensus, entry_price_today, shares_to_unwind_daily_new_trade, shares_to_trade))
                         trade_actions_log_top2_consensus.append(new_open_trade_log_entry(direction_top2_consensus, entry_price_today))
+
         # Cumulative Probability Signals
         proba_today = y_pred_proba_test[t]
         sum_positive_proba = np.sum(proba_today[positive_cluster_indices]) if len(positive_cluster_indices) > 0 else 0
@@ -951,29 +1353,37 @@ def run_trading_simulation(
         for trade in all_trade_actions[strat_key]:
             if 'date' in trade and not isinstance(trade['date'], pd.Timestamp):
                 try: trade['date'] = pd.to_datetime(trade['date'])
-                except: pass # ignore if conversion fails
+                except: pass 
             if 'open_date' in trade and not isinstance(trade['open_date'], pd.Timestamp):
                 try: trade['open_date'] = pd.to_datetime(trade['open_date'])
                 except: pass
 
-
     for strategy_col_name in portfolio_values.columns:
         final_value = portfolio_values[strategy_col_name].iloc[-1] if num_total_trading_days > 0 and not portfolio_values[strategy_col_name].empty else initial_portfolio_value
-        total_return_pct = ((final_value / initial_portfolio_value) - 1) * 100 if initial_portfolio_value > 0 else 0
+        total_return_pct = ((final_value / initial_portfolio_value) - 1) * 100 if initial_portfolio_value != 0 else 0 # Avoid division by zero
         
         if portfolio_values[strategy_col_name].dropna().empty and initial_portfolio_value == 0 : strat_returns = pd.Series(dtype=float)
         elif portfolio_values[strategy_col_name].dropna().empty and initial_portfolio_value !=0 : strat_returns = pd.Series([0.0] * num_total_trading_days, index=price_test_series.index[:num_total_trading_days])
         else :
+            # Prepend initial portfolio value for pct_change calculation
+            # Ensure the series for pct_change starts with the correct initial value for this strategy
+            # For benchmark, it starts with initial_portfolio_value and grows by daily_rate_hold
+            # For trading strategies, it starts with initial_portfolio_value and changes by daily_pnl
             temp_series_for_pct_change = pd.Series([initial_portfolio_value] + portfolio_values[strategy_col_name].tolist())
             strat_returns = temp_series_for_pct_change.pct_change().iloc[1:].fillna(0)
-            strat_returns.index = price_test_series.index[:len(strat_returns)] # Ensure index alignment
+            if num_total_trading_days > 0 and len(strat_returns) == num_total_trading_days:
+                 strat_returns.index = price_test_series.index[:len(strat_returns)] # Ensure index alignment
+            elif num_total_trading_days > 0 : # Mismatch, try to align
+                 strat_returns = pd.Series(strat_returns.values, index=price_test_series.index[:len(strat_returns)])
+
 
         sharpe_ratio_all_time = np.nan
         if len(strat_returns) > 1 :
             std_dev = strat_returns.std()
             if std_dev > epsilon_std: sharpe_ratio_all_time = (strat_returns.mean() / std_dev) * np.sqrt(periods_per_year if periods_per_year > 0 else 252)
             elif strat_returns.mean() == 0 and std_dev <= epsilon_std : sharpe_ratio_all_time = 0.0
-        elif len(strat_returns) <=1 and not strat_returns.empty and strat_returns.mean()==0 : sharpe_ratio_all_time = 0.0
+        elif len(strat_returns) == 1 and not strat_returns.empty and strat_returns.iloc[0]==0 : sharpe_ratio_all_time = 0.0
+
 
         current_metrics = {
             'Final Portfolio Value': final_value, 'Total Return (%)': total_return_pct,
@@ -981,20 +1391,110 @@ def run_trading_simulation(
             'Avg Daily Return (%)': strat_returns.mean() * 100 if not strat_returns.empty else 0,
             'Std Dev Daily Return (%)': strat_returns.std() * 100 if len(strat_returns) > 1 else 0,
         }
-        
-        # Rolling Metrics (Sharpe, Long Win Rate, Short Win Rate)
-        # Initialize a list to store dicts for each window's metrics
+        #print(current_metrics)
+        # --- START: New Metrics for last N trading days (10, 30, 60) ---
+        metrics_periods_last_n = [10, 30, 60]
+        if num_total_trading_days > 0: 
+            for n_days_lookback in metrics_periods_last_n:
+                # --- Sharpe Ratio Last N Days ---
+                sharpe_key = f"sharpe_ratio_last_{n_days_lookback}_trading_days"
+                returns_slice_for_sharpe = pd.Series(dtype=float) # Default to empty
+                if len(strat_returns) >= n_days_lookback: # Sufficient data for full lookback
+                    returns_slice_for_sharpe = strat_returns.iloc[-n_days_lookback:]
+                elif len(strat_returns) > 1: # Partial data, but more than 1 day
+                    returns_slice_for_sharpe = strat_returns.iloc[:] # Use all available
+                
+                if len(returns_slice_for_sharpe) > 1:
+                    std_dev_slice = returns_slice_for_sharpe.std()
+                    mean_slice = returns_slice_for_sharpe.mean()
+                    if std_dev_slice > epsilon_std:
+                        current_metrics[sharpe_key] = (mean_slice / std_dev_slice) * np.sqrt(periods_per_year if periods_per_year > 0 else 252)
+                    elif mean_slice == 0 and std_dev_slice <= epsilon_std:
+                        current_metrics[sharpe_key] = 0.0
+                    else: 
+                        current_metrics[sharpe_key] = np.nan 
+                elif len(returns_slice_for_sharpe) == 1 and not returns_slice_for_sharpe.empty and returns_slice_for_sharpe.iloc[0] == 0.0:
+                    current_metrics[sharpe_key] = 0.0
+                else: 
+                    current_metrics[sharpe_key] = np.nan
+
+                # --- Win Rate Last N Days ---
+                win_rate_key = f"win_rate_last_{n_days_lookback}_trading_days"
+                if strategy_col_name in all_trade_actions:
+                    strategy_specific_trades = all_trade_actions[strategy_col_name]
+                    wins_ndays, total_trades_ndays = 0, 0
+                    
+                    end_date_of_simulation = price_test_series.index[-1]
+                    start_date_idx_for_window = max(0, num_total_trading_days - n_days_lookback)
+                    start_date_of_window = price_test_series.index[start_date_idx_for_window]
+
+                    for trade in strategy_specific_trades:
+                        if trade['type'] == 'close':
+                            trade_close_date = trade.get('date') 
+                            if not isinstance(trade_close_date, pd.Timestamp):
+                                try: trade_close_date = pd.to_datetime(trade_close_date)
+                                except: continue # Skip if date is unparseable
+                            
+                            # Basic timezone handling: if index is aware, try to make trade_date aware, if index is naive, make trade_date naive.
+                            # This is a simplified approach; robust timezone handling can be complex.
+                            if price_test_series.index.tz is not None: # Index is TZ aware
+                                if trade_close_date.tz is None: # Trade date is naive
+                                    try: trade_close_date = trade_close_date.tz_localize(price_test_series.index.tz)
+                                    except Exception: pass # If localization fails, proceed with caution
+                                elif trade_close_date.tz != price_test_series.index.tz: # Both aware, different TZs
+                                    try: trade_close_date = trade_close_date.tz_convert(price_test_series.index.tz)
+                                    except Exception: pass
+                            else: # Index is TZ naive
+                                if trade_close_date.tz is not None: # Trade date is aware
+                                     try: trade_close_date = trade_close_date.tz_localize(None) # Make naive
+                                     except Exception: pass
+                            
+                            if pd.isna(trade_close_date): continue
+
+                            if start_date_of_window <= trade_close_date <= end_date_of_simulation:
+                                total_trades_ndays += 1
+                                if trade.get('pnl', 0) > 1e-6: 
+                                    wins_ndays += 1
+                    current_metrics[win_rate_key] = (wins_ndays / total_trades_ndays * 100) if total_trades_ndays > 0 else 0.0
+                else: 
+                    current_metrics[win_rate_key] = np.nan
+
+                # --- Running Total Returns Last N Days ---
+                running_total_returns_key = f"running_total_returns_last_{n_days_lookback}_trading_days"
+                portfolio_series_for_strat = portfolio_values[strategy_col_name]
+                
+                val_end_period = portfolio_series_for_strat.iloc[-1]
+                val_start_for_calc = initial_portfolio_value # Default for short histories
+
+                if num_total_trading_days > n_days_lookback:
+                    # Value N days prior to the start of the N-day interval ending today is at index -(N+1)
+                    val_start_for_calc = portfolio_series_for_strat.iloc[-(n_days_lookback + 1)]
+                # If num_total_trading_days <= n_days_lookback, val_start_for_calc remains initial_portfolio_value
+
+                if val_start_for_calc is not None and val_start_for_calc != 0:
+                    current_metrics[running_total_returns_key] = ((val_end_period / val_start_for_calc) - 1) * 100
+                elif val_end_period == val_start_for_calc: 
+                    current_metrics[running_total_returns_key] = 0.0
+                else: 
+                    current_metrics[running_total_returns_key] = np.nan
+        else: # num_total_trading_days is 0
+            for n_days_lookback in metrics_periods_last_n:
+                current_metrics[f"sharpe_ratio_last_{n_days_lookback}_trading_days"] = np.nan
+                current_metrics[f"win_rate_last_{n_days_lookback}_trading_days"] = np.nan
+                current_metrics[f"running_total_returns_last_{n_days_lookback}_trading_days"] = np.nan
+        # --- END: New Metrics for last N trading days ---
+
+
+        # Rolling Metrics (Sharpe, Long Win Rate, Short Win Rate) - Existing logic
         rolling_metrics_details_list = []
         if not strat_returns.empty and len(strat_returns) >= rolling_window_days and rolling_window_days > 0:
-            # Get the relevant trade log for the current strategy
-            strategy_specific_trades = all_trade_actions.get(strategy_col_name, [])
+            strategy_specific_trades_for_rolling = all_trade_actions.get(strategy_col_name, [])
             
             for i in range(0, len(strat_returns) - rolling_window_days + 1, rolling_window_days):
                 window_returns = strat_returns.iloc[i : i + rolling_window_days]
                 window_start_date = window_returns.index[0]
                 window_end_date = window_returns.index[-1]
                 
-                # Rolling Sharpe
                 sharpe_window_val = np.nan
                 if len(window_returns) >= 2:
                     std_dev_window = window_returns.std()
@@ -1002,22 +1502,19 @@ def run_trading_simulation(
                     if std_dev_window > epsilon_std: sharpe_window_val = (mean_window / std_dev_window) * np.sqrt(periods_per_year if periods_per_year > 0 else 252)
                     elif mean_window == 0 and std_dev_window <= epsilon_std : sharpe_window_val = 0.0
                 
-                # Rolling Long/Short Win Rates for this window
                 long_wins_window, long_total_window = 0, 0
                 short_wins_window, short_total_window = 0, 0
                 
-                if strategy_specific_trades: # Only if it's a trading strategy
-                    # Filter trades that CLOSED within this window
-                    # Ensure dates are comparable (Timestamp vs Timestamp)
+                if strategy_specific_trades_for_rolling: 
                     window_start_date_ts = pd.to_datetime(window_start_date)
                     window_end_date_ts = pd.to_datetime(window_end_date)
 
-                    for trade in strategy_specific_trades:
+                    for trade in strategy_specific_trades_for_rolling:
                         if trade['type'] == 'close':
-                            # Ensure trade['date'] is a Timestamp for comparison
-                            trade_close_date_ts = pd.to_datetime(trade['date'])
+                            trade_close_date_ts = pd.to_datetime(trade['date']) # Assumes 'date' is convertible
+                            # Simplified timezone handling for rolling metrics, assuming consistency from earlier conversion
                             if window_start_date_ts <= trade_close_date_ts <= window_end_date_ts:
-                                is_profit = trade['pnl'] > 1e-6 # Using same threshold as overall stats
+                                is_profit = trade['pnl'] > 1e-6 
                                 if trade['original_pos_type'] == 'long':
                                     long_total_window += 1
                                     if is_profit: long_wins_window += 1
@@ -1039,11 +1536,10 @@ def run_trading_simulation(
                 })
         
         current_metrics[f'Rolling {rolling_window_days}-Day Metrics'] = rolling_metrics_details_list
-        # Optional: Calculate average of rolling metrics if desired
         if rolling_metrics_details_list:
-            current_metrics[f'Avg Rolling {rolling_window_days}-Day Sharpe'] = np.nanmean([m['sharpe_ratio'] for m in rolling_metrics_details_list])
-            current_metrics[f'Avg Rolling {rolling_window_days}-Day Long Win Rate (%)'] = np.nanmean([m['long_win_rate (%)'] for m in rolling_metrics_details_list])
-            current_metrics[f'Avg Rolling {rolling_window_days}-Day Short Win Rate (%)'] = np.nanmean([m['short_win_rate (%)'] for m in rolling_metrics_details_list])
+            current_metrics[f'Avg Rolling {rolling_window_days}-Day Sharpe'] = np.nanmean([m['sharpe_ratio'] for m in rolling_metrics_details_list if 'sharpe_ratio' in m])
+            current_metrics[f'Avg Rolling {rolling_window_days}-Day Long Win Rate (%)'] = np.nanmean([m['long_win_rate (%)'] for m in rolling_metrics_details_list if 'long_win_rate (%)' in m])
+            current_metrics[f'Avg Rolling {rolling_window_days}-Day Short Win Rate (%)'] = np.nanmean([m['short_win_rate (%)'] for m in rolling_metrics_details_list if 'short_win_rate (%)' in m])
 
 
         trade_stats_map = {
@@ -1065,9 +1561,9 @@ def run_trading_simulation(
                 current_metrics['Short Wins (%)'] = (specific_buy_short_stats['shorts_wins'] / specific_buy_short_stats['shorts_total'] * 100) if specific_buy_short_stats['shorts_total'] > 0 else 0
                 current_metrics['Total Short Trades'] = specific_buy_short_stats['shorts_total']
         metrics[strategy_col_name] = current_metrics
-            
-    return portfolio_values, metrics, all_trade_actions
 
+
+    return portfolio_values, metrics, all_trade_actions
 
 def plot_trading_actions(
     price_series: pd.Series,
