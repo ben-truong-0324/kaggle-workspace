@@ -16,9 +16,12 @@ import wandb
 from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 import numpy as np
+import math
 import torch.nn.functional as F
 
 import matplotlib.pyplot as plt
+
+from collections import defaultdict
 
 
 def conditionally_encode_labels(y_train, y_val):
@@ -465,11 +468,6 @@ def log_model_artifact(model, model_name, framework="sklearn"):
     wandb.log_artifact(artifact)
     
 
-# def log_final_metrics(eval_metrics):
-#     for metric, value in eval_metrics.items():
-#         if isinstance(value, (int, float)):
-#             mlflow.log_metric(metric, value)
-#     wandb.log(eval_metrics)
 def log_final_metrics(eval_metrics):
 
     flat_metrics = {}
@@ -494,172 +492,397 @@ def log_final_metrics(eval_metrics):
     # Log flat metrics to W&B in one call (avoids duplicates)
     wandb.log(flat_metrics)
 
+def track_label_losses(outputs_logits, targets, device):
+    """
+    Computes and tracks the loss for each individual label.
+    
+    Args:
+        outputs_logits (torch.Tensor): Output logits from the model.
+        targets (torch.Tensor): Target labels.
+        device (torch.device): The device tensors are on.
+        
+    Returns:
+        dict: Dictionary where keys are labels and values are lists of loss values for each label.
+    """
+    # Initialize a dictionary to store losses for each label
+    label_losses = {}
+    
+    # Ensure targets is on the same device as outputs_logits for comparison
+    targets = targets.to(device)
 
+    # Compute all losses at once using CrossEntropyLoss with no reduction
+    criterion_here = nn.CrossEntropyLoss(reduction='none')
+    per_sample_losses = criterion_here(outputs_logits, targets)
+    
+    # Get unique labels present in the current batch
+    unique_labels_in_batch = torch.unique(targets).cpu().numpy()
+
+    for label_val in unique_labels_in_batch:
+        # Create a tensor for the current label_val, ensuring it's on the correct device and dtype
+        label_tensor = torch.tensor(label_val, device=targets.device, dtype=targets.dtype)
+        # Find indices where the target matches the current label_val
+        indices_for_label = (targets == label_tensor).nonzero(as_tuple=True)[0]
+       
+        # If there are samples for this label, compute the average loss
+        if len(indices_for_label) > 0:
+            avg_loss_for_label = per_sample_losses[indices_for_label].mean().item()
+            label_losses[int(label_val)] = avg_loss_for_label
+        else:
+            # Handle cases where a label might appear in unique_labels but have no samples (should be rare with torch.unique)
+            label_losses[int(label_val)] = np.nan 
+            
+    return label_losses
+
+
+def plot_label_losses(history_train_losses_with_epochs, history_val_losses_with_epochs=None):
+    """
+    Plots the per-label loss progression over epochs for training and validation sets.
+
+    Args:
+        history_train_losses_with_epochs (list): A list of dictionaries for training, 
+                                                 where each dictionary is {'epoch': epoch_num, 'losses': {label: loss_val}}.
+        history_val_losses_with_epochs (list, optional): A list of dictionaries for validation,
+                                                          structured similarly to training history. Defaults to None.
+    """
+    if not history_train_losses_with_epochs:
+        print("INFO: No per-label training loss history to plot.")
+        return
+
+    # Determine all unique labels and epochs from both histories
+    all_labels = set()
+    for item in history_train_losses_with_epochs:
+        all_labels.update(item['losses'].keys())
+    if history_val_losses_with_epochs:
+        for item in history_val_losses_with_epochs:
+            all_labels.update(item['losses'].keys())
+    
+    if not all_labels:
+        print("INFO: No labels found in the loss history.")
+        return
+        
+    unique_labels_to_plot = sorted(list(all_labels))
+
+    plot_data_train = {label: [] for label in unique_labels_to_plot}
+    plot_data_val = {label: [] for label in unique_labels_to_plot}
+
+    recorded_epochs_train = {item['epoch']: item['losses'] for item in history_train_losses_with_epochs}
+    recorded_epochs_val = {}
+    if history_val_losses_with_epochs:
+        recorded_epochs_val = {item['epoch']: item['losses'] for item in history_val_losses_with_epochs}
+
+    all_epochs_numeric = sorted(list(set(recorded_epochs_train.keys()) | set(recorded_epochs_val.keys())))
+
+    if not all_epochs_numeric:
+        print("INFO: No epoch data found to plot.")
+        return
+
+    for epoch_num in all_epochs_numeric:
+        train_losses_at_epoch = recorded_epochs_train.get(epoch_num, {})
+        val_losses_at_epoch = recorded_epochs_val.get(epoch_num, {})
+        for label_key in unique_labels_to_plot:
+            plot_data_train[label_key].append(train_losses_at_epoch.get(label_key, np.nan))
+            plot_data_val[label_key].append(val_losses_at_epoch.get(label_key, np.nan))
+    
+    plt.figure(figsize=(14, 8)) # Increased figure size for better readability
+    
+    has_plotted_train = False
+    has_plotted_val = False
+
+    for label_val in unique_labels_to_plot:
+        losses_train_at_recorded_epochs = plot_data_train[label_val]
+        if not all(np.isnan(l) for l in losses_train_at_recorded_epochs):
+            plt.plot(all_epochs_numeric, losses_train_at_recorded_epochs, marker='o', linestyle='-', label=f'Train Loss Label {label_val}')
+            has_plotted_train = True
+        
+        if history_val_losses_with_epochs:
+            losses_val_at_recorded_epochs = plot_data_val[label_val]
+            if not all(np.isnan(l) for l in losses_val_at_recorded_epochs):
+                plt.plot(all_epochs_numeric, losses_val_at_recorded_epochs, marker='x', linestyle='--', label=f'Val Loss Label {label_val}')
+                has_plotted_val = True
+    
+    plt.xlabel('Epoch')
+    plt.ylabel('Average Loss per Label')
+    title_parts = ["Per-Label Loss Over Demo Epochs"]
+    if has_plotted_train and has_plotted_val:
+        title_parts.append("(Train & Validation)")
+    elif has_plotted_train:
+        title_parts.append("(Training)")
+    title_parts.append("(Tracked Periodically)")
+    plt.title(' '.join(title_parts))
+
+    if all_epochs_numeric:
+        # Ensure x-ticks are sensible, especially if many epochs are tracked
+        if len(all_epochs_numeric) > 20: # Heuristic for too many ticks
+             tick_indices = np.linspace(0, len(all_epochs_numeric) - 1, num=10, dtype=int)
+             plt.xticks([all_epochs_numeric[i] for i in tick_indices])
+        else:
+             plt.xticks(all_epochs_numeric)
+    
+    if has_plotted_train or has_plotted_val:
+        plt.legend(loc='best', fontsize='small')
+    plt.grid(True, axis='y', linestyle=':', alpha=0.7)
+    plt.tight_layout()
+    plt.show()
 
 
 def train_nn_model_with_demo(
     model, X_train, y_train, X_val, y_val,
-    epochs=10,  # Main training epochs, demo mode uses a fixed 10 epochs
+    epochs=10,
     lr=0.005,
-    task_type="multinomial_classification", # Ensure this is set correctly
-    eval_metric_name="val_metric", # Unused by this demo logic
-    eval_metric_fn=None, # Unused by this demo logic
-    bin_centers=None, # Unused by this demo logic
-    patience=5 # Unused by this demo logic
+    task_type="multinomial_classification", 
+    eval_metric_name="val_metric", # Not used in this demo
+    eval_metric_fn=None, # Not used in this demo
+    with_class_weight=False,
+    bin_centers=None, # Not used in this demo
+    patience=5 # Not used in this demo
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
     if task_type == "multinomial_classification":
         print(f"INFO: Running DEMO for task_type: {task_type} on a subset of training data.")
-        print("INFO: This demo will run for a fixed 10 epochs with visualizations of logits.")
-        print(f"INFO: The 'epochs={epochs}' parameter from the function call is ignored for this demo mode.")
-        print("INFO: Parameters X_val, y_val, eval_metric_fn, patience, etc., are also not used by this demo.\n")
-
-        # --- 1. Data Preparation for Demo (Toy Sample from provided X_train, y_train) ---
-        num_demo_instances = 7
+        print("INFO: Validation data will be used for visualization if provided.")
+        print("INFO: Parameters eval_metric_fn, patience, etc., are not used by this demo.\n")
         
-        if X_train is None or y_train is None or X_train.shape[0] == 0 or y_train.shape[0] == 0:
+        if X_train is None or y_train is None or X_train.shape[0] == 0 or \
+           (hasattr(y_train, 'shape') and y_train.shape[0] == 0) or \
+           (isinstance(y_train, list) and not y_train):
             print("ERROR: X_train or y_train is None or empty. Cannot run demo.")
             return model, None
             
-        if X_train.shape[0] < num_demo_instances:
-            print(f"WARNING: X_train has {X_train.shape[0]} instances, fewer than the demo's requested {num_demo_instances}. Using all available instances.")
-            num_demo_instances = X_train.shape[0]
+        # --- Prepare Training Data ---
+        X_sample_data = X_train
+        y_sample_labels_data = y_train
+
+        X_sample_tensor = torch.tensor(X_sample_data.values if isinstance(X_sample_data, pd.DataFrame) else X_sample_data, dtype=torch.float32).to(device)
         
-        if num_demo_instances == 0: # Should be caught by previous check, but as a safeguard
-            print("ERROR: No data instances available in X_train for the demo.")
-            return model, None
+        y_s_numpy = y_sample_labels_data.to_numpy() if isinstance(y_sample_labels_data, (pd.Series, pd.DataFrame)) else np.array(y_sample_labels_data)
+        y_sample_labels_tensor = torch.tensor(y_s_numpy, dtype=torch.long).to(device)
 
-        unique_labels = list(set(y_train))  # Get unique labels
-
-        # Select first occurrence of each label until we have 3 different ones
-        selected_indices = []
-        selected_labels = []
-
-        y_train_np = y_train.to_numpy()
-
-        for label in unique_labels:
-            if len(selected_labels) < num_demo_instances:  # Continue until 3 different labels are found
-                idx = torch.where(torch.tensor(y_train_np == label))[0][0] 
-                selected_indices.append(idx.item())
-                selected_labels.append(label)
-
-        X_sample = X_train[selected_indices]
-        y_sample_labels = y_train[selected_indices]
-
-        num_classes = y_train.nunique()
+        num_classes_train = len(np.unique(y_s_numpy)) 
+        print(f"INFO: Inferred num_classes for demo from training data: {num_classes_train}")
+        print(f"INFO: Demo will run on {X_sample_tensor.shape[0]} training instances.")
         
-        print(f"INFO: Inferred num_classes for demo: {num_classes}")
+        # --- Prepare Validation Data (if available) ---
+        X_val_tensor, y_val_tensor, y_val_numpy = None, None, None
+        if X_val is not None and y_val is not None:
+            if X_val.shape[0] > 0 and ((hasattr(y_val, 'shape') and y_val.shape[0] > 0) or (isinstance(y_val, list) and y_val)):
+                print(f"INFO: Validation data provided with {X_val.shape[0]} instances.")
+                X_val_tensor = torch.tensor(X_val.values if isinstance(X_val, pd.DataFrame) else X_val, dtype=torch.float32).to(device)
+                y_val_numpy = y_val.to_numpy() if isinstance(y_val, (pd.Series, pd.DataFrame)) else np.array(y_val)
+                y_val_tensor = torch.tensor(y_val_numpy, dtype=torch.long).to(device)
+            else:
+                print("INFO: Validation data (X_val or y_val) is empty, skipping validation metrics.")
+        else:
+            print("INFO: No validation data (X_val or y_val is None), skipping validation metrics.")
 
-        print("--- Demo Sample Data ---")
-        print(f"X_sample shape: {X_sample.shape}")
-        print(f"Original y_sample_labels (indices):\n{y_sample_labels}")
+        print(f"INFO: Per-epoch visualizations and loss tracking will occur every 5 epochs.")
 
-        # --- 3. Loss Function and Optimizer ---
-        criterion = nn.CrossEntropyLoss()
-        # Ensure model parameters are available for optimizer
+        # Compute class frequencies and weights
+        y_train_np = np.array(y_train)
+        unique_labels, counts = np.unique(y_train_np, return_counts=True)
+        num_classes = len(unique_labels)
+        class_weights = torch.FloatTensor([1.0 / count for count in counts]).to(device)
+        
+        if with_class_weight:
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            criterion = nn.CrossEntropyLoss() 
         try:
             optimizer = optim.Adam(model.parameters(), lr=lr)
         except ValueError as e:
              print(f"ERROR: Could not initialize optimizer. Ensure the model has parameters. Original error: {e}")
              return model, None
 
-
-        # --- 4. Training Loop (fixed 10 epochs for demo) ---
-        demo_epochs = 5
+        # --- Training Loop ---
+        demo_epochs = epochs
         print(f"--- Starting DEMO Training for {demo_epochs} epochs (lr={lr}) ---")
 
-        X_sample = torch.tensor(X_sample.values if isinstance(X_sample, pd.DataFrame) else X_sample, dtype=torch.float32).to(device)
-        # y_sample_labels = torch.tensor(y_sample_labels).long() 
-        # y_sample_labels = torch.tensor(y_sample_labels).unsqueeze(1).float()
-        y_sample_labels = torch.tensor(y_sample_labels).long()
+        final_loss_val_train = None
+        history_label_losses_train = [] 
+        history_label_losses_val = []
 
-        # print(criterion)
-    
-        final_loss_val = None
         for epoch in range(demo_epochs):
-            model.train() # Set model to training mode
+            model.train() 
             optimizer.zero_grad()
             
-            outputs_logits = model(X_sample)
+            outputs_logits_train_batch = model(X_sample_tensor)
+            loss_train_batch = criterion(outputs_logits_train_batch, y_sample_labels_tensor)
             
-            loss = criterion(outputs_logits, y_sample_labels)
-            
-            loss.backward()
+            loss_train_batch.backward()
             optimizer.step()
-            final_loss_val = loss.item()
+            final_loss_val_train = loss_train_batch.item()
+            
+            if (epoch + 1) % 5 == 0:
+                print(f"\n--- Generating visualizations and tracking losses for Epoch {epoch + 1} ---")
+                model.eval() 
+                val_loss_for_title = None
 
-            # --- 5. Visualization ---
-            model.eval() # Set model to evaluation mode for visualization
-            with torch.no_grad():
-                current_logits_np = outputs_logits.cpu().numpy()
-                log_softmax_values = torch.log_softmax(outputs_logits, dim=1)
-                current_log_softmax_np = log_softmax_values.cpu().numpy()
-                y_actual_np = y_sample_labels.cpu().numpy()
+                with torch.no_grad():
+                    # --- Track per-label losses (TRAIN) ---
+                    # Re-evaluate on training data in eval mode for consistent metric calculation
+                    current_outputs_logits_train = model(X_sample_tensor)
+                    current_epoch_label_losses_train = track_label_losses(current_outputs_logits_train.detach(), y_sample_labels_tensor, device)
+                    history_label_losses_train.append({'epoch': epoch + 1, 'losses': current_epoch_label_losses_train})
 
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(19, 7)) # Increased width slightly
-                bar_width = 0.20 
-                indices = np.arange(num_classes)
+                    # --- Calculate overall validation loss and track per-label losses (VAL) if data exists ---
+                    if X_val_tensor is not None and y_val_tensor is not None:
+                        current_outputs_logits_val = model(X_val_tensor)
+                        loss_val_batch = criterion(current_outputs_logits_val, y_val_tensor)
+                        val_loss_for_title = loss_val_batch.item()
+                        
+                        current_epoch_label_losses_val = track_label_losses(current_outputs_logits_val.detach(), y_val_tensor, device)
+                        history_label_losses_val.append({'epoch': epoch + 1, 'losses': current_epoch_label_losses_val})
 
-                # Plot 1: Raw Logits
-                plotted_true_marker_legend_ax1 = False
-                for i in range(num_demo_instances):
-                    offset = (i - (num_demo_instances - 1) / 2) * bar_width
-                    ax1.bar(indices + offset, current_logits_np[i, :], width=bar_width, label=f'Sample {i} Logits')
-                    for c_idx in range(num_classes):
-                        # print(y_actual_np[i])
-                        if y_actual_np[i] == c_idx:
-                            x_pos = indices[c_idx] + offset
-                            y_pos = current_logits_np[i, c_idx]
-                            label_marker = None
-                            if not plotted_true_marker_legend_ax1:
-                                label_marker = "Actual Class (Target=1)"
-                                plotted_true_marker_legend_ax1 = True
-                            ax1.scatter(x_pos, y_pos, color='red', marker='*', s=150, zorder=5, label=label_marker, edgecolors='black')
-                            ax1.text(x_pos, y_pos + np.copysign(0.15, y_pos) if y_pos!=0 else 0.15, '★ Actual', color='red', ha='center', va='bottom' if y_pos >=0 else 'top', fontsize=8, fontweight='bold')
+                    # --- Prepare data for bar plots ---
+                    # Training metrics
+                    softmax_values_train = torch.softmax(current_outputs_logits_train, dim=1)
+                    log_softmax_values_train = torch.log_softmax(current_outputs_logits_train, dim=1)
+                    
+                    current_logits_train_np = current_outputs_logits_train.cpu().numpy()
+                    current_softmax_train_np = softmax_values_train.cpu().numpy()
+                    current_log_softmax_train_np = log_softmax_values_train.cpu().numpy()
+                    current_nll_train_np = -current_log_softmax_train_np 
+                    y_actual_train_np = y_sample_labels_tensor.cpu().numpy()
+                    unique_labels_train_batch = np.unique(y_actual_train_np)
+
+                    # Validation metrics (if available)
+                    current_logits_val_np, current_softmax_val_np, current_log_softmax_val_np, current_nll_val_np = [None]*4
+                    y_actual_val_np, unique_labels_val_batch = None, np.array([])
+                    if X_val_tensor is not None and y_val_tensor is not None:
+                        softmax_values_val = torch.softmax(current_outputs_logits_val, dim=1)
+                        log_softmax_values_val = torch.log_softmax(current_outputs_logits_val, dim=1)
+
+                        current_logits_val_np = current_outputs_logits_val.cpu().numpy()
+                        current_softmax_val_np = softmax_values_val.cpu().numpy()
+                        current_log_softmax_val_np = log_softmax_values_val.cpu().numpy()
+                        current_nll_val_np = -current_log_softmax_val_np
+                        y_actual_val_np = y_val_tensor.cpu().numpy()
+                        unique_labels_val_batch = np.unique(y_actual_val_np)
+                    
+                    # Combine unique labels for plotting axes
+                    combined_unique_labels_for_plot = sorted(list(set(unique_labels_train_batch) | set(unique_labels_val_batch)))
+                    if not combined_unique_labels_for_plot: # Fallback if somehow both are empty
+                        combined_unique_labels_for_plot = sorted(list(unique_labels_train_batch))
+
+
+                    # Calculate average metrics per label
+                    metrics_train = {'logits': [], 'softmax': [], 'log_softmax': [], 'nll': []}
+                    metrics_val = {'logits': [], 'softmax': [], 'log_softmax': [], 'nll': []}
+
+                    for label_val in combined_unique_labels_for_plot:
+                        # Training
+                        indices_train = np.where(y_actual_train_np == label_val)[0]
+                        if len(indices_train) > 0:
+                            metrics_train['logits'].append(np.mean(current_logits_train_np[indices_train, label_val]))
+                            metrics_train['softmax'].append(np.mean(current_softmax_train_np[indices_train, label_val]))
+                            metrics_train['log_softmax'].append(np.mean(current_log_softmax_train_np[indices_train, label_val]))
+                            metrics_train['nll'].append(np.mean(current_nll_train_np[indices_train, label_val]))
+                        else:
+                            for k in metrics_train: metrics_train[k].append(np.nan)
+                        
+                        # Validation
+                        if y_actual_val_np is not None:
+                            indices_val = np.where(y_actual_val_np == label_val)[0]
+                            if len(indices_val) > 0:
+                                metrics_val['logits'].append(np.mean(current_logits_val_np[indices_val, label_val]))
+                                metrics_val['softmax'].append(np.mean(current_softmax_val_np[indices_val, label_val]))
+                                metrics_val['log_softmax'].append(np.mean(current_log_softmax_val_np[indices_val, label_val]))
+                                metrics_val['nll'].append(np.mean(current_nll_val_np[indices_val, label_val]))
+                            else:
+                                for k in metrics_val: metrics_val[k].append(np.nan)
+                        else: # No validation data, fill with NaNs
+                             for k in metrics_val: metrics_val[k].append(np.nan)
+
+
+                # --- Plotting Bar Charts ---
+                if not combined_unique_labels_for_plot:
+                    print("INFO: No labels to plot for bar charts in this epoch.")
+                else:
+                    plot_indices = np.arange(len(combined_unique_labels_for_plot))
+                    xticklabels = [f'Class {lbl}' for lbl in combined_unique_labels_for_plot]
+                    bar_width = 0.35 
+
+                    fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(28, 8)) 
+
+                    # Plot 1: Average Raw Logits
+                    ax1.bar(plot_indices - bar_width/2, metrics_train['logits'], width=bar_width, color='skyblue', label='Train Avg. Logit')
+                    if X_val_tensor is not None: ax1.bar(plot_indices + bar_width/2, metrics_val['logits'], width=bar_width, color='lightsteelblue', label='Val Avg. Logit')
+                    ax1.set_ylabel('Average Logit Value')
+                    ax1.set_title('Avg. Raw Logits of True Class')
+                    ax1.set_xticks(plot_indices)
+                    ax1.set_xticklabels(xticklabels, rotation=45, ha="right")
+                    ax1.legend(loc='best', fontsize='small')
+                    ax1.grid(True, axis='y', linestyle=':', alpha=0.6)
+                    ax1.axhline(0, color='black', linewidth=0.5, linestyle='--')
+
+                    # Plot 2: Average Softmax Probability
+                    ax2.bar(plot_indices - bar_width/2, metrics_train['softmax'], width=bar_width, color='lightcoral', label='Train Avg. Softmax')
+                    if X_val_tensor is not None: ax2.bar(plot_indices + bar_width/2, metrics_val['softmax'], width=bar_width, color='salmon', label='Val Avg. Softmax')
+                    ax2.set_ylabel('Average Softmax Probability')
+                    ax2.set_title('Avg. Softmax Prob. of True Class')
+                    ax2.set_xticks(plot_indices)
+                    ax2.set_xticklabels(xticklabels, rotation=45, ha="right")
+                    ax2.legend(loc='best', fontsize='small')
+                    ax2.grid(True, axis='y', linestyle=':', alpha=0.6)
+                    ax2.set_ylim(0, 1.05) 
+                    # ... (reference lines for softmax)
+
+                    # Plot 3: Average LogSoftmax
+                    ax3.bar(plot_indices - bar_width/2, metrics_train['log_softmax'], width=bar_width, color='lightgreen', label='Train Avg. LogSoftmax')
+                    if X_val_tensor is not None: ax3.bar(plot_indices + bar_width/2, metrics_val['log_softmax'], width=bar_width, color='darkseagreen', label='Val Avg. LogSoftmax')
+                    ax3.set_ylabel('Average LogSoftmax Value')
+                    ax3.set_title('Avg. LogSoftmax of True Class')
+                    ax3.set_xticks(plot_indices)
+                    ax3.set_xticklabels(xticklabels, rotation=45, ha="right")
+                    ax3.legend(loc='best', fontsize='small')
+                    ax3.grid(True, axis='y', linestyle=':', alpha=0.6)
+                    # ... (reference lines for log_softmax)
+                    ax3.axhline(0, color='black', linewidth=0.5, linestyle='--')
+
+
+                    # Plot 4: Average NLL
+                    ax4.bar(plot_indices - bar_width/2, metrics_train['nll'], width=bar_width, color='gold', label='Train Avg. NLL')
+                    if X_val_tensor is not None: ax4.bar(plot_indices + bar_width/2, metrics_val['nll'], width=bar_width, color='khaki', label='Val Avg. NLL')
+                    ax4.set_ylabel('Average NLL Value')
+                    ax4.set_title('Avg. NLL of True Class')
+                    ax4.set_xticks(plot_indices)
+                    ax4.set_xticklabels(xticklabels, rotation=45, ha="right")
+                    ax4.legend(loc='best', fontsize='small')
+                    ax4.grid(True, axis='y', linestyle=':', alpha=0.6)
+                    # ... (reference lines for NLL)
+                    ax4.axhline(0, color='black', linewidth=0.5, linestyle='--')
+
+                    title_str = f'DEMO - Epoch {epoch+1}/{demo_epochs} - Train Batch Loss: {loss_train_batch.item():.4f}'
+                    if val_loss_for_title is not None:
+                        title_str += f' - Val Batch Loss: {val_loss_for_title:.4f}'
+                    title_str += '\n(Metrics Averaged per True Class Label)'
+                    fig.suptitle(title_str, fontsize=14) # Reduced font size slightly
+                    plt.tight_layout(rect=[0, 0.03, 1, 0.92]) # Adjusted rect for suptitle
+                    plt.show()
+
+                print(f"DEMO Epoch [{epoch+1}/{demo_epochs}], Train Batch Loss: {loss_train_batch.item():.4f}")
+                if val_loss_for_title is not None:
+                     print(f"DEMO Epoch [{epoch+1}/{demo_epochs}], Val Batch Loss: {val_loss_for_title:.4f}")
                 
-                ax1.set_xticks(indices)
-                ax1.set_xticklabels([f'Class {j}' for j in range(num_classes)])
-                ax1.set_ylabel('Logit Value')
-                ax1.set_title(f'Raw Logits (Epoch {epoch+1})')
-                ax1.legend(loc='best', fontsize='small')
-                ax1.grid(True, axis='y', linestyle=':', alpha=0.6)
-                ax1.axhline(0, color='black', linewidth=0.5, linestyle='--')
+                # print(f"Per-label average NLL (Train - from tracking): {current_epoch_label_losses_train}")
+                # if X_val_tensor is not None and y_val_tensor is not None and history_label_losses_val:
+                #      print(f"Per-label average NLL (Val - from tracking): {history_label_losses_val[-1]['losses']}")
 
-                # Plot 2: LogSoftmax
-                plotted_true_marker_legend_ax2 = False
-                for i in range(num_demo_instances):
-                    offset = (i - (num_demo_instances - 1) / 2) * bar_width
-                    ax2.bar(indices + offset, current_log_softmax_np[i, :], width=bar_width, label=f'Sample {i} LogSoftmax')
-                    for c_idx in range(num_classes):
-                        if y_actual_np[i] == c_idx:
-                            x_pos = indices[c_idx] + offset
-                            y_pos = current_log_softmax_np[i, c_idx]
-                            label_marker = None
-                            if not plotted_true_marker_legend_ax2:
-                                label_marker = "Actual Class (Target=1)"
-                                plotted_true_marker_legend_ax2 = True
-                            ax2.scatter(x_pos, y_pos, color='darkgreen', marker='*', s=150, zorder=5, label=label_marker, edgecolors='black')
-                            ax2.text(x_pos, y_pos + np.copysign(0.15, y_pos) if y_pos!=0 else 0.15, '★ Actual', color='darkgreen', ha='center', va='bottom' if y_pos >=0 else 'top', fontsize=8, fontweight='bold')
+            model.train() # Ensure model is back in training mode for the next iteration
 
-                ax2.set_xticks(indices)
-                ax2.set_xticklabels([f'Class {j}' for j in range(num_classes)])
-                ax2.set_ylabel('LogSoftmax Value')
-                ax2.set_title(f'LogSoftmax (Epoch {epoch+1})')
-                ax2.legend(loc='best', fontsize='small')
-                ax2.grid(True, axis='y', linestyle=':', alpha=0.6)
-                ax2.axhline(0, color='black', linewidth=0.5, linestyle='--') # LogSoftmax values are <= 0
-                
-                fig.suptitle(f'Logit Processing DEMO - Epoch {epoch+1}/{demo_epochs} - Loss: {loss.item():.4f}', fontsize=15)
-                plt.tight_layout(rect=[0, 0.02, 1, 0.95]) # Adjust layout for suptitle
-                plt.show()
-
-            print(f"DEMO Epoch [{epoch+1}/{demo_epochs}], Loss: {loss.item():.4f}")
+        # After the loop, plot the per-label loss history for train and val
+        plot_label_losses(history_label_losses_train, history_label_losses_val if history_label_losses_val else None)
 
         print(f"\n--- DEMO Training Complete ---")
-        if final_loss_val is not None:
-            print(f"Final DEMO Loss after {demo_epochs} epochs: {final_loss_val:.4f} ✨")
-        return model, final_loss_val
+        if final_loss_val_train is not None:
+            print(f"Final DEMO Training Batch Loss after {demo_epochs} epochs: {final_loss_val_train:.4f} ✨")
+        
+        # Return model and final training loss. Could also return validation loss if needed.
+        return model, final_loss_val_train
 
-    else: # task_type is not "multinomial_classification"
+    else: 
         print(f"INFO: Skipping logit processing demo because task_type is '{task_type}' (expected 'multinomial_classification').")
-        # Potentially, original
+        return model, None
+
+
