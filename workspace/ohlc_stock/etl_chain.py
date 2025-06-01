@@ -1089,8 +1089,8 @@ def engineer_technical_indicators_relative(input_df: pd.DataFrame,
             0.5, # Price is at the (collapsed) band center
             np.where(current_price[bb_range < epsilon] > bb_mid_abs[bb_range < epsilon], 1.0, 0.0) # Price is above or below
         )
-        # df[f'bb_percent_b_{bb_period}'].fillna(0.5, inplace=True) # Fill any other NaNs (e.g., initial)
-        df = df.fillna({f'bb_percent_b_{bb_period}': 0.5}, inplace=True) #if broken, use above
+        df[f'bb_percent_b_{bb_period}'].fillna(0.5, inplace=True) # Fill any other NaNs (e.g., initial)
+        # df = df.fillna({f'bb_percent_b_{bb_period}': 0.5}, inplace=True) #if broken, use above
         df[f'bb_percent_b_{bb_period}'] = df[f'bb_percent_b_{bb_period}'].clip(0, 1) # Common clipping
     else:
         print(f"Warning: Price column '{price_col}' not found or all NaN. Most price-based indicators skipped.")

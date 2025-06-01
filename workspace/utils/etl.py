@@ -174,7 +174,7 @@ def get_raw_dataset(dataset_name, target_column, dataset_type = "raw", drop_na =
 
 def run_recommended_etl(dataset_name: str, target_column: str, \
                         recommendation: dict, \
-                        task_type: str = "multiclass_classification") -> dict:
+                        task_type: str = "multinomial_classification") -> dict:
     X, y = get_raw_dataset(dataset_name, target_column)
 
     # Apply transformations from recommendation

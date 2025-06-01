@@ -17,6 +17,10 @@ from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 import numpy as np
 import torch.nn.functional as F
+
+import matplotlib.pyplot as plt
+
+
 def conditionally_encode_labels(y_train, y_val):
     """
     Conditionally apply LabelEncoder to y_train and y_val
@@ -57,7 +61,7 @@ def train_sklearn_model(model, X_train, y_train, X_val, y_val, task_type):
         y_val (pd.DataFrame, pd.Series, or np.ndarray): Validation target (not used directly in this function
                                                             for training, but typically present for context).
         task_type (str): Type of task ("regression", "multioutput_regression",
-                         "prob_vector", "multiclass_classification").
+                         "prob_vector", "multinomial_classification").
 
     Returns:
         tuple: (
@@ -67,8 +71,8 @@ def train_sklearn_model(model, X_train, y_train, X_val, y_val, task_type):
                                                        or None if not applicable.
         )
     """
-    if task_type not in ("regression", "multioutput_regression", "prob_vector", "multiclass_classification"):
-        raise ValueError(f"Task type '{task_type}' not supported. Supported: regression, multioutput_regression, prob_vector, multiclass_classification.")
+    if task_type not in ("regression", "multioutput_regression", "prob_vector", "multinomial_classification"):
+        raise ValueError(f"Task type '{task_type}' not supported. Supported: regression, multioutput_regression, prob_vector, multinomial_classification.")
 
     # Prepare y_train for scikit-learn (typically 1D for classifiers/regressors)
     if isinstance(y_train, pd.DataFrame) or isinstance(y_train, pd.Series):
@@ -85,7 +89,7 @@ def train_sklearn_model(model, X_train, y_train, X_val, y_val, task_type):
     y_pred_main = None
     y_pred_probabilities = None
 
-    if task_type == "multiclass_classification":
+    if task_type == "multinomial_classification":
         y_pred_main = y_pred_raw  # These are class labels, typically (n_samples,)
         if y_pred_main.ndim == 1:
             y_pred_main = y_pred_main.reshape(-1, 1)  # Consistent output shape (n_samples, 1)
@@ -225,7 +229,7 @@ def train_nn_model(
     model, X_train, y_train, X_val, y_val,
     epochs=10,
     lr = .005,
-    task_type="multiclass_classification", # Ensure this is set correctly
+    task_type="multinomial_classification", # Ensure this is set correctly
     eval_metric_name="val_metric",
     eval_metric_fn=None,
     bin_centers=None,
@@ -255,7 +259,7 @@ def train_nn_model(
         y_train_tensor = torch.tensor(y_train_np, dtype=torch.float32).unsqueeze(1).to(device)
         y_val_tensor = torch.tensor(y_val_np, dtype=torch.float32).unsqueeze(1).to(device)
         criterion = nn.BCEWithLogitsLoss() # Expects raw logits from model
-    elif task_type == "multiclass_classification":
+    elif task_type == "multinomial_classification":
         # Convert from DataFrame to 1D NumPy array of ints
         y_train_tensor = torch.tensor(y_train_np.squeeze(), dtype=torch.long).to(device)
         y_val_tensor = torch.tensor(y_val_np.squeeze(), dtype=torch.long).to(device)
@@ -293,7 +297,7 @@ def train_nn_model(
         epoch_train_loss_sum = 0.0
 
         for xb, yb in train_loader:
-            preds_raw = model(xb) # Raw logits or direct output from model
+            preds_raw = model(xb) # Raw logits 
             current_loss = None
             if task_type == "prob_vector":
                 if custom_loss_fn_instance:
@@ -301,8 +305,7 @@ def train_nn_model(
                 else: # Fallback to KLDivLoss
                     log_probs = F.log_softmax(preds_raw, dim=1) # KLDivLoss expects log_softmax input
                     current_loss = criterion(log_probs, yb) # yb should be target probabilities
-            else: # For regression, binary_classification, multiclass_classification
-                  # criterion (MSELoss, BCEWithLogitsLoss, CrossEntropyLoss) typically takes raw logits
+            else: 
                 current_loss = criterion(preds_raw, yb)
             optimizer.zero_grad()
             current_loss.backward()
@@ -326,7 +329,7 @@ def train_nn_model(
                 val_probs_pos_class = torch.sigmoid(val_preds_raw_logits).cpu().numpy() # Prob P(1)
                 current_y_pred_processed_np = (val_probs_pos_class > 0.5).astype(int).squeeze() # Labels
                 y_true_for_eval_np = y_val_tensor.cpu().numpy().round().astype(int).squeeze()
-            elif task_type == "multiclass_classification":
+            elif task_type == "multinomial_classification":
                 current_y_pred_processed_np = torch.argmax(val_preds_raw_logits, dim=1).cpu().numpy() # Labels
                 y_true_for_eval_np = y_val_tensor.cpu().numpy() # Already (N,), long
             elif task_type == "prob_vector":
@@ -347,7 +350,7 @@ def train_nn_model(
                     y_pred_for_eval = current_y_pred_processed_np
                     if task_type == "binary_classification" and "auc" in eval_metric_name.lower(): # e.g. roc_auc
                         y_pred_for_eval = torch.sigmoid(val_preds_raw_logits).cpu().numpy().squeeze() # Pass P(1)
-                    elif task_type == "multiclass_classification" and "auc" in eval_metric_name.lower():
+                    elif task_type == "multinomial_classification" and "auc" in eval_metric_name.lower():
                         y_pred_for_eval = F.softmax(val_preds_raw_logits, dim=1).cpu().numpy() # Pass (N,C) probs
 
                     if eval_metric_name == "Earth Mover's Distance":
@@ -427,9 +430,9 @@ def train_nn_model(
             
             probs_neg_class = 1.0 - probs_pos_class
             final_y_pred_probas_for_roc = torch.cat((probs_neg_class, probs_pos_class), dim=1).cpu().numpy() # Shape (N, 2)
-        elif task_type == "multiclass_classification":
-            final_y_pred_main = torch.argmax(final_val_preds_raw_logits, dim=1).cpu().numpy() # Labels (N,)
-            final_y_pred_probas_for_roc = F.softmax(final_val_preds_raw_logits, dim=1).cpu().numpy() # Probs (N, C)
+        elif task_type == "multinomial_classification":
+            final_y_pred_main = torch.argmax(final_val_preds_raw_logits, dim=1).cpu().numpy() # Labels (N,), argmax for label with highest score
+            final_y_pred_probas_for_roc = F.softmax(final_val_preds_raw_logits, dim=1).cpu().numpy() # Probs (N, C), softmax to assign softmax prob value in [0,1] for each label
         elif task_type == "prob_vector":
             final_y_pred_main = F.softmax(final_val_preds_raw_logits, dim=1).cpu().numpy() # Probs (N, K)
             final_y_pred_probas_for_roc = None # Main output is already the probability vector
@@ -492,3 +495,171 @@ def log_final_metrics(eval_metrics):
     wandb.log(flat_metrics)
 
 
+
+
+def train_nn_model_with_demo(
+    model, X_train, y_train, X_val, y_val,
+    epochs=10,  # Main training epochs, demo mode uses a fixed 10 epochs
+    lr=0.005,
+    task_type="multinomial_classification", # Ensure this is set correctly
+    eval_metric_name="val_metric", # Unused by this demo logic
+    eval_metric_fn=None, # Unused by this demo logic
+    bin_centers=None, # Unused by this demo logic
+    patience=5 # Unused by this demo logic
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if task_type == "multinomial_classification":
+        print(f"INFO: Running DEMO for task_type: {task_type} on a subset of training data.")
+        print("INFO: This demo will run for a fixed 10 epochs with visualizations of logits.")
+        print(f"INFO: The 'epochs={epochs}' parameter from the function call is ignored for this demo mode.")
+        print("INFO: Parameters X_val, y_val, eval_metric_fn, patience, etc., are also not used by this demo.\n")
+
+        # --- 1. Data Preparation for Demo (Toy Sample from provided X_train, y_train) ---
+        num_demo_instances = 7
+        
+        if X_train is None or y_train is None or X_train.shape[0] == 0 or y_train.shape[0] == 0:
+            print("ERROR: X_train or y_train is None or empty. Cannot run demo.")
+            return model, None
+            
+        if X_train.shape[0] < num_demo_instances:
+            print(f"WARNING: X_train has {X_train.shape[0]} instances, fewer than the demo's requested {num_demo_instances}. Using all available instances.")
+            num_demo_instances = X_train.shape[0]
+        
+        if num_demo_instances == 0: # Should be caught by previous check, but as a safeguard
+            print("ERROR: No data instances available in X_train for the demo.")
+            return model, None
+
+        unique_labels = list(set(y_train))  # Get unique labels
+
+        # Select first occurrence of each label until we have 3 different ones
+        selected_indices = []
+        selected_labels = []
+
+        y_train_np = y_train.to_numpy()
+
+        for label in unique_labels:
+            if len(selected_labels) < num_demo_instances:  # Continue until 3 different labels are found
+                idx = torch.where(torch.tensor(y_train_np == label))[0][0] 
+                selected_indices.append(idx.item())
+                selected_labels.append(label)
+
+        X_sample = X_train[selected_indices]
+        y_sample_labels = y_train[selected_indices]
+
+        num_classes = y_train.nunique()
+        
+        print(f"INFO: Inferred num_classes for demo: {num_classes}")
+
+        print("--- Demo Sample Data ---")
+        print(f"X_sample shape: {X_sample.shape}")
+        print(f"Original y_sample_labels (indices):\n{y_sample_labels}")
+
+        # --- 3. Loss Function and Optimizer ---
+        criterion = nn.CrossEntropyLoss()
+        # Ensure model parameters are available for optimizer
+        try:
+            optimizer = optim.Adam(model.parameters(), lr=lr)
+        except ValueError as e:
+             print(f"ERROR: Could not initialize optimizer. Ensure the model has parameters. Original error: {e}")
+             return model, None
+
+
+        # --- 4. Training Loop (fixed 10 epochs for demo) ---
+        demo_epochs = 5
+        print(f"--- Starting DEMO Training for {demo_epochs} epochs (lr={lr}) ---")
+
+        X_sample = torch.tensor(X_sample.values if isinstance(X_sample, pd.DataFrame) else X_sample, dtype=torch.float32).to(device)
+        # y_sample_labels = torch.tensor(y_sample_labels).long() 
+        # y_sample_labels = torch.tensor(y_sample_labels).unsqueeze(1).float()
+        y_sample_labels = torch.tensor(y_sample_labels).long()
+
+        # print(criterion)
+    
+        final_loss_val = None
+        for epoch in range(demo_epochs):
+            model.train() # Set model to training mode
+            optimizer.zero_grad()
+            
+            outputs_logits = model(X_sample)
+            
+            loss = criterion(outputs_logits, y_sample_labels)
+            
+            loss.backward()
+            optimizer.step()
+            final_loss_val = loss.item()
+
+            # --- 5. Visualization ---
+            model.eval() # Set model to evaluation mode for visualization
+            with torch.no_grad():
+                current_logits_np = outputs_logits.cpu().numpy()
+                log_softmax_values = torch.log_softmax(outputs_logits, dim=1)
+                current_log_softmax_np = log_softmax_values.cpu().numpy()
+                y_actual_np = y_sample_labels.cpu().numpy()
+
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(19, 7)) # Increased width slightly
+                bar_width = 0.20 
+                indices = np.arange(num_classes)
+
+                # Plot 1: Raw Logits
+                plotted_true_marker_legend_ax1 = False
+                for i in range(num_demo_instances):
+                    offset = (i - (num_demo_instances - 1) / 2) * bar_width
+                    ax1.bar(indices + offset, current_logits_np[i, :], width=bar_width, label=f'Sample {i} Logits')
+                    for c_idx in range(num_classes):
+                        # print(y_actual_np[i])
+                        if y_actual_np[i] == c_idx:
+                            x_pos = indices[c_idx] + offset
+                            y_pos = current_logits_np[i, c_idx]
+                            label_marker = None
+                            if not plotted_true_marker_legend_ax1:
+                                label_marker = "Actual Class (Target=1)"
+                                plotted_true_marker_legend_ax1 = True
+                            ax1.scatter(x_pos, y_pos, color='red', marker='*', s=150, zorder=5, label=label_marker, edgecolors='black')
+                            ax1.text(x_pos, y_pos + np.copysign(0.15, y_pos) if y_pos!=0 else 0.15, '★ Actual', color='red', ha='center', va='bottom' if y_pos >=0 else 'top', fontsize=8, fontweight='bold')
+                
+                ax1.set_xticks(indices)
+                ax1.set_xticklabels([f'Class {j}' for j in range(num_classes)])
+                ax1.set_ylabel('Logit Value')
+                ax1.set_title(f'Raw Logits (Epoch {epoch+1})')
+                ax1.legend(loc='best', fontsize='small')
+                ax1.grid(True, axis='y', linestyle=':', alpha=0.6)
+                ax1.axhline(0, color='black', linewidth=0.5, linestyle='--')
+
+                # Plot 2: LogSoftmax
+                plotted_true_marker_legend_ax2 = False
+                for i in range(num_demo_instances):
+                    offset = (i - (num_demo_instances - 1) / 2) * bar_width
+                    ax2.bar(indices + offset, current_log_softmax_np[i, :], width=bar_width, label=f'Sample {i} LogSoftmax')
+                    for c_idx in range(num_classes):
+                        if y_actual_np[i] == c_idx:
+                            x_pos = indices[c_idx] + offset
+                            y_pos = current_log_softmax_np[i, c_idx]
+                            label_marker = None
+                            if not plotted_true_marker_legend_ax2:
+                                label_marker = "Actual Class (Target=1)"
+                                plotted_true_marker_legend_ax2 = True
+                            ax2.scatter(x_pos, y_pos, color='darkgreen', marker='*', s=150, zorder=5, label=label_marker, edgecolors='black')
+                            ax2.text(x_pos, y_pos + np.copysign(0.15, y_pos) if y_pos!=0 else 0.15, '★ Actual', color='darkgreen', ha='center', va='bottom' if y_pos >=0 else 'top', fontsize=8, fontweight='bold')
+
+                ax2.set_xticks(indices)
+                ax2.set_xticklabels([f'Class {j}' for j in range(num_classes)])
+                ax2.set_ylabel('LogSoftmax Value')
+                ax2.set_title(f'LogSoftmax (Epoch {epoch+1})')
+                ax2.legend(loc='best', fontsize='small')
+                ax2.grid(True, axis='y', linestyle=':', alpha=0.6)
+                ax2.axhline(0, color='black', linewidth=0.5, linestyle='--') # LogSoftmax values are <= 0
+                
+                fig.suptitle(f'Logit Processing DEMO - Epoch {epoch+1}/{demo_epochs} - Loss: {loss.item():.4f}', fontsize=15)
+                plt.tight_layout(rect=[0, 0.02, 1, 0.95]) # Adjust layout for suptitle
+                plt.show()
+
+            print(f"DEMO Epoch [{epoch+1}/{demo_epochs}], Loss: {loss.item():.4f}")
+
+        print(f"\n--- DEMO Training Complete ---")
+        if final_loss_val is not None:
+            print(f"Final DEMO Loss after {demo_epochs} epochs: {final_loss_val:.4f} ✨")
+        return model, final_loss_val
+
+    else: # task_type is not "multinomial_classification"
+        print(f"INFO: Skipping logit processing demo because task_type is '{task_type}' (expected 'multinomial_classification').")
+        # Potentially, original

@@ -317,7 +317,7 @@ def evaluate_model(y_true, y_pred, task_type, eval_metric_name=None, eval_metric
         y_true (array-like): True target values.
         y_pred (array-like): Predicted target values.
         task_type (str): Type of machine learning task
-                         ("binary_classification", "multiclass_classification",
+                         ("binary_classification", "multinomial_classification",
                           "regression", "prob_vector").
         eval_metric_name (str, optional): Name of the custom evaluation metric.
                                           Required for "prob_vector" task_type.
@@ -337,7 +337,7 @@ def evaluate_model(y_true, y_pred, task_type, eval_metric_name=None, eval_metric
 
     metrics = {}
 
-    if task_type in ["binary_classification", "multiclass_classification"]:
+    if task_type in ["binary_classification", "multinomial_classification"]:
         # Ensure y_pred is in the correct format (e.g., class labels, not probabilities)
         # if the model output probabilities, you might need to convert them to class labels
         # e.g., y_pred_labels = np.argmax(y_pred_probs, axis=1) if y_pred is probabilities

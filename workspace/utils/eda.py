@@ -18,6 +18,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+import math
+from collections import defaultdict
+
 def eda_vis(X, y, task_type):
     print("📊 Target Column Summary:")
     print(f"  Shape: {y.shape}")
@@ -30,7 +33,7 @@ def eda_vis(X, y, task_type):
     # === Basic Target Distribution & Relative Frequency (side-by-side) ===
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
     
-    if task_type in ["binary_classification", "multiclass_classification"]:
+    if task_type in ["binary_classification", "multinomial_classification"]:
         sns.countplot(ax=axes[0], x=y, hue=y,palette=sns_palette, order=sorted(y.unique()))
         axes[0].set_title("Target Class Distribution")
         axes[0].set_xlabel("Target Class")
@@ -1034,3 +1037,121 @@ def analyze_cluster_ev_category_shifts(
     if not shift_df.empty:
         shift_df = shift_df.drop_duplicates(subset=['Cluster']).set_index('Cluster')
     return shift_df
+
+
+def visualize_class_support(train_labels, val_labels, test_labels,
+                           title="Class Support"):
+    """
+    Visualizes the distribution of classes across train, validation, and test sets.
+    
+    Parameters:
+        train_labels (pd.Series): Target labels for training set
+        val_labels (pd.Series): Target labels for validation set
+        test_labels (pd.Series): Target labels for test set
+        title (str): Title of the plot
+    
+    Returns:
+        None, displays the plots and prints class balance metrics.
+    """
+    # Calculate support (counts) for each dataset split
+    train_counts = train_labels.value_counts()
+    val_counts = val_labels.value_counts()
+    test_counts = test_labels.value_counts()
+
+    # Get all unique classes across splits
+    all_classes = set(train_counts.index).union(val_counts.index).union(test_counts.index)
+    class_names = sorted(all_classes)  # Sort for consistent ordering
+
+    # Create subplots with 1 row and 3 columns
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+    
+    # Metric dictionaries to store counts and percentages
+    metric_data = defaultdict(dict)
+    
+    # Function to create bar plot for each dataset split
+    def create_bar_plot(counts, ax, title, is_percentage=True):
+        unique_classes = sorted(counts.index.unique())
+        positions = range(len(unique_classes))
+        bars = ax.bar(positions, counts[unique_classes], color='skyblue')
+        # Add counts or percentages on top of each bar
+        # for bar in bars:
+        #     height = bar.get_height()
+        #     # if is_percentage:
+        #     #     value = f"{height:.2%}"
+        #     # else:
+        #     #     value = str(int(height))
+
+       
+        #     x_pos = bar.get_x() + bar.get_width() / 2.
+            # ax.text(x_pos, height, value, ha='center', va='bottom')
+            
+        # Customize the plot
+        ax.set_title(f"{title}", fontsize=12)
+        ax.set_xlabel('Class', fontsize=10)
+        ax.set_ylabel('Count', fontsize=10)
+        ax.tick_params(axis='both', which='major', labelsize=8)
+    
+    # Create bar plots for each split
+    create_bar_plot(train_counts, axes[0], "Train Set", is_percentage=True)
+    create_bar_plot(val_counts, axes[1], "Validation Set", is_percentage=True)
+    create_bar_plot(test_counts, axes[2], "Test Set", is_percentage=True)
+    
+    # Adjust layout and display
+    plt.tight_layout()
+    plt.suptitle(title, fontsize=14, y=1.05)
+    plt.show()
+
+    # Print class balance metrics
+    print("\nClass Balance Metrics:")
+    for dataset, counts in zip(['Train', 'Val', 'Test'], 
+                             [train_counts, val_counts, test_counts]):
+        total = sum(counts.values)
+        metric_data[dataset] = {}
+        
+        # Calculate count and percentage for each class
+        for cls in all_classes:
+            cnt = counts.get(cls, 0)
+            percent = (cnt / total) * 100 if total > 0 else 0
+            
+            metric_data[dataset][cls] = {
+                'count': cnt,
+                'percentage': f"{percent:.2f}%"
+            }
+        
+        
+    # Print imbalance ratio if applicable
+    def calculate_imbalance_ratio(counts):
+        total = sum(counts.values)
+        max_cls_count = counts.max()
+        min_cls_count = counts.min()
+        return (max_cls_count / min_cls_count) if min_cls_count > 0 else 0
+
+    def calculate_gini_index(counts, n_classes=None):
+        """Calculate the Gini index for class distribution."""
+        total = sum(counts.values)
+        prob = counts.apply(lambda x: x / total)
+        gini = 1 - (prob ** 2).sum()
+        return round(gini, 3)
+
+   
+    # Calculate metrics for each dataset split
+    train_imb_ratio = calculate_imbalance_ratio(train_counts)
+    val_imb_ratio = calculate_imbalance_ratio(val_counts)
+    test_imb_ratio = calculate_imbalance_ratio(test_counts)
+
+    train_gini = calculate_gini_index(train_counts)
+    val_gini = calculate_gini_index(val_counts)
+    test_gini = calculate_gini_index(val_counts)
+
+
+    # Print results
+    print("\nClass Balance Metrics:")
+    print("Ratio between most and least occuring labels:")
+    print(f"- Train: {train_imb_ratio:.2f}")
+    print(f"- Validation: {val_imb_ratio:.2f}")
+    print(f"- Test: {test_imb_ratio:.2f}")
+
+    print("\nGini Index (0 = perfectly balanced, 1 = completely imbalanced):")
+    print(f"- Train: {train_gini:.3f}")
+    print(f"- Validation: {val_gini:.3f}")
+    print(f"- Test: {test_gini:.3f}")
