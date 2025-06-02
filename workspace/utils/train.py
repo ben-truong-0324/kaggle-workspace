@@ -629,10 +629,13 @@ def train_nn_model_with_demo(
     model, X_train, y_train, X_val, y_val,
     epochs=10,
     lr=0.005,
+    batch_size: int = 64, 
     task_type="multinomial_classification", 
+    side_load_kl_loss: bool = False,
     eval_metric_name="val_metric", # Not used in this demo
     eval_metric_fn=None, # Not used in this demo
     with_class_weight=False,
+    y_train_proba = None,
     bin_centers=None, # Not used in this demo
     patience=5 # Not used in this demo
 ):
@@ -644,24 +647,66 @@ def train_nn_model_with_demo(
         print("INFO: Validation data will be used for visualization if provided.")
         print("INFO: Parameters eval_metric_fn, patience, etc., are not used by this demo.\n")
         
-        if X_train is None or y_train is None or X_train.shape[0] == 0 or \
-           (hasattr(y_train, 'shape') and y_train.shape[0] == 0) or \
-           (isinstance(y_train, list) and not y_train):
-            print("ERROR: X_train or y_train is None or empty. Cannot run demo.")
+         # --- Input Data Validation ---
+        if X_train is None or y_train is None or y_train_proba is None:
+            print("ERROR: X_train, y_train, or y_train_proba is None. Cannot run demo.")
+            return model, None
+        
+        def get_shape0(data):
+            if hasattr(data, 'shape'):
+                return data.shape[0]
+            elif isinstance(data, list):
+                return len(data)
+            return 0
+
+        if not (get_shape0(X_train) > 0 and get_shape0(y_train) > 0 and get_shape0(y_train_proba) > 0):
+            print("ERROR: X_train, y_train, or y_train_proba is empty. Cannot run demo.")
+            return model, None
+        
+        if not (get_shape0(X_train) == get_shape0(y_train) == get_shape0(y_train_proba)):
+            print(f"ERROR: X_train (len: {get_shape0(X_train)}), y_train (len: {get_shape0(y_train)}), "
+                  f"and y_train_proba (len: {get_shape0(y_train_proba)}) must have the same number of samples.")
             return model, None
             
         # --- Prepare Training Data ---
-        X_sample_data = X_train
-        y_sample_labels_data = y_train
+        # X_sample_data = X_train
+        # y_sample_labels_data = y_train
 
-        X_sample_tensor = torch.tensor(X_sample_data.values if isinstance(X_sample_data, pd.DataFrame) else X_sample_data, dtype=torch.float32).to(device)
+        # X_sample_tensor = torch.tensor(X_sample_data.values if isinstance(X_sample_data, pd.DataFrame) else X_sample_data, dtype=torch.float32).to(device)
         
-        y_s_numpy = y_sample_labels_data.to_numpy() if isinstance(y_sample_labels_data, (pd.Series, pd.DataFrame)) else np.array(y_sample_labels_data)
-        y_sample_labels_tensor = torch.tensor(y_s_numpy, dtype=torch.long).to(device)
+        # y_s_numpy = y_sample_labels_data.to_numpy() if isinstance(y_sample_labels_data, (pd.Series, pd.DataFrame)) else np.array(y_sample_labels_data)
+        # y_sample_labels_tensor = torch.tensor(y_s_numpy, dtype=torch.long).to(device)
 
-        num_classes_train = len(np.unique(y_s_numpy)) 
-        print(f"INFO: Inferred num_classes for demo from training data: {num_classes_train}")
-        print(f"INFO: Demo will run on {X_sample_tensor.shape[0]} training instances.")
+        # num_classes_train = len(np.unique(y_s_numpy)) 
+        # print(f"INFO: Inferred num_classes for demo from training data: {num_classes_train}")
+        # print(f"INFO: Demo will run on {X_sample_tensor.shape[0]} training instances.")
+        X_train_tensor = torch.tensor(X_train.values if isinstance(X_train, pd.DataFrame) else X_train, dtype=torch.float32)
+        
+        y_train_labels_numpy = y_train.to_numpy() if isinstance(y_train, (pd.Series, pd.DataFrame)) else np.array(y_train)
+        y_train_labels_tensor = torch.tensor(y_train_labels_numpy, dtype=torch.long)
+
+        if isinstance(y_train_proba, (pd.DataFrame, pd.Series)):
+            y_train_proba_numpy = y_train_proba.values
+        elif not isinstance(y_train_proba, np.ndarray):
+            y_train_proba_numpy = np.array(y_train_proba)
+        else:
+            y_train_proba_numpy = y_train_proba
+        y_train_proba_tensor = torch.tensor(y_train_proba_numpy, dtype=torch.float32)
+
+        num_classes_inferred_from_labels = len(np.unique(y_train_labels_numpy))
+        print(f"INFO: Inferred num_classes based on unique labels in y_train: {num_classes_inferred_from_labels}")
+        # Note: The actual number of classes the model outputs is defined by its architecture.
+        # y_train_proba should align with the model's output layer size.
+        num_classes_model_output = y_train_proba_tensor.shape[1] if y_train_proba_tensor.ndim > 1 else num_classes_inferred_from_labels
+        print(f"INFO: Number of classes expected from y_train_proba/model output: {num_classes_model_output}")
+
+
+        # Create TensorDataset and DataLoader
+        train_dataset = TensorDataset(X_train_tensor, y_train_labels_tensor, y_train_proba_tensor)
+        train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+        
+        print(f"INFO: Demo will run on {len(train_dataset)} training instances, with batch size {batch_size}.")
+        
         
         # --- Prepare Validation Data (if available) ---
         X_val_tensor, y_val_tensor, y_val_numpy = None, None, None
@@ -698,20 +743,46 @@ def train_nn_model_with_demo(
         demo_epochs = epochs
         print(f"--- Starting DEMO Training for {demo_epochs} epochs (lr={lr}) ---")
 
+        side_load_criterion = nn.KLDivLoss(reduction='batchmean')
+
         final_loss_val_train = None
         history_label_losses_train = [] 
         history_label_losses_val = []
 
         for epoch in range(demo_epochs):
             model.train() 
-            optimizer.zero_grad()
+
+            running_ce_loss_epoch = 0.0
+            # running_kl_loss_epoch = 0.0
             
-            outputs_logits_train_batch = model(X_sample_tensor)
-            loss_train_batch = criterion(outputs_logits_train_batch, y_sample_labels_tensor)
-            
-            loss_train_batch.backward()
-            optimizer.step()
-            final_loss_val_train = loss_train_batch.item()
+            for batch_idx, (batch_X, batch_y_labels, batch_y_proba) in enumerate(train_loader):
+                batch_X = batch_X.to(device)
+                batch_y_labels = batch_y_labels.to(device)
+                batch_y_proba = batch_y_proba.to(device)
+
+                optimizer.zero_grad()
+                outputs_logits_train_batch = model(batch_X)
+                if outputs_logits_train_batch.shape[1] != batch_y_proba.shape[1]:
+                    print(f"CRITICAL ERROR: Mismatch in number of classes! "
+                          f"Model output: {outputs_logits_train_batch.shape[1]}, "
+                          f"y_train_proba: {batch_y_proba.shape[1]}. "
+                          f"Ensure y_train_proba columns match model's output layer size.")
+                    return model, None # Stop training
+
+                loss_train_batch = criterion(outputs_logits_train_batch, batch_y_labels)
+
+                if side_load_kl_loss:
+                    side_load_criterion =  nn.KLDivLoss(reduction='batchmean')
+                    log_probs_hat = F.log_softmax(outputs_logits_train_batch, dim=1)
+                    side_load_loss = side_load_criterion(log_probs_hat, batch_y_proba)
+                    side_load_loss.backward()
+                    # running_kl_loss_epoch += side_load_loss.item() * batch_X.size(0)
+                else:
+                    loss_train_batch.backward()
+                optimizer.step()
+                running_ce_loss_epoch += loss_train_batch.item() * batch_X.size(0)
+                
+            final_loss_val_train = running_ce_loss_epoch / len(train_loader.dataset)
             
             if (epoch + 1) % 5 == 0:
                 print(f"\n--- Generating visualizations and tracking losses for Epoch {epoch + 1} ---")
@@ -721,8 +792,10 @@ def train_nn_model_with_demo(
                 with torch.no_grad():
                     # --- Track per-label losses (TRAIN) ---
                     # Re-evaluate on training data in eval mode for consistent metric calculation
-                    current_outputs_logits_train = model(X_sample_tensor)
-                    current_epoch_label_losses_train = track_label_losses(current_outputs_logits_train.detach(), y_sample_labels_tensor, device)
+
+
+                    current_outputs_logits_train = model(X_train_tensor)
+                    current_epoch_label_losses_train = track_label_losses(current_outputs_logits_train.detach(), y_train_labels_tensor, device)
                     history_label_losses_train.append({'epoch': epoch + 1, 'losses': current_epoch_label_losses_train})
 
                     # --- Calculate overall validation loss and track per-label losses (VAL) if data exists ---
@@ -743,7 +816,7 @@ def train_nn_model_with_demo(
                     current_softmax_train_np = softmax_values_train.cpu().numpy()
                     current_log_softmax_train_np = log_softmax_values_train.cpu().numpy()
                     current_nll_train_np = -current_log_softmax_train_np 
-                    y_actual_train_np = y_sample_labels_tensor.cpu().numpy()
+                    y_actual_train_np = y_train_labels_tensor.cpu().numpy()
                     unique_labels_train_batch = np.unique(y_actual_train_np)
 
                     # Validation metrics (if available)
