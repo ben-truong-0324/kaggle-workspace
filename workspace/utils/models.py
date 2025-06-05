@@ -433,6 +433,77 @@ def get_custom_nn_model(input_dim: int, output_dim: int = 1, model_type = "mlp",
             out = self.fc(attn_avg) # [batch, output_dim]
             
             return out
+    # === Autoregressive Decoder Custom Model (GRU based) ===
+    class AutoregressiveDecoder(nn.Module):
+        def __init__(self, input_dim_gru, hidden_size_gru, output_dim_classifier, num_gru_layers,
+                     dropout_rate, activation_fn_decoder, use_batch_norm_decoder,
+                     decoder_hidden_expansion_factor=2):
+            super().__init__()
+            self.gru = nn.GRU(
+                input_size=input_dim_gru,
+                hidden_size=hidden_size_gru,
+                num_layers=num_gru_layers,
+                batch_first=True,
+                # GRU's own dropout applies to outputs of all layers except the last one
+                dropout=dropout_rate if num_gru_layers > 1 else 0.0
+            )
+
+            # Decoder MLP part
+            # Input to decoder MLP is hidden_size_gru (from GRU's last hidden state)
+            decoder_mlp_layers = []
+            current_mlp_dim = hidden_size_gru
+            expanded_mlp_dim = hidden_size_gru * decoder_hidden_expansion_factor
+
+            # Layer 1 (optional expansion): hidden_gru -> expanded_mlp_dim
+            if decoder_hidden_expansion_factor > 0 and expanded_mlp_dim != current_mlp_dim : # allow no expansion if factor is 1
+                decoder_mlp_layers.append(nn.Linear(current_mlp_dim, expanded_mlp_dim))
+                if use_batch_norm_decoder:
+                    decoder_mlp_layers.append(nn.BatchNorm1d(expanded_mlp_dim))
+                decoder_mlp_layers.append(activation_fn_decoder) # User's choice of activation (e.g., ReLU, Tanh)
+                if dropout_rate > 0:
+                    decoder_mlp_layers.append(nn.Dropout(dropout_rate))
+                current_mlp_dim = expanded_mlp_dim
+            
+            # Layer 2 (optional compression/transformation): current_mlp_dim -> hidden_size_gru
+            # This structure is inspired by MLP_custom's hidden*2 -> hidden, but more generic
+            if current_mlp_dim != hidden_size_gru and expanded_mlp_dim != hidden_size_gru : # Add if different from previous or target next hidden
+                 decoder_mlp_layers.append(nn.Linear(current_mlp_dim, hidden_size_gru))
+                 if use_batch_norm_decoder:
+                     decoder_mlp_layers.append(nn.BatchNorm1d(hidden_size_gru))
+                 decoder_mlp_layers.append(activation_fn_decoder)
+                 if dropout_rate > 0:
+                     decoder_mlp_layers.append(nn.Dropout(dropout_rate))
+                 current_mlp_dim = hidden_size_gru
+            
+            # Final output layer
+            decoder_mlp_layers.append(nn.Linear(current_mlp_dim, output_dim_classifier))
+            self.decoder_mlp = nn.Sequential(*decoder_mlp_layers)
+
+            self.dropout_rate_val = dropout_rate # Store for potential direct use if needed
+
+
+        def forward(self, x):
+            # x shape: (batch_size, seq_len, input_dim_gru)
+            # If x is (batch_size, input_dim_gru), unsqueeze to add seq_len dimension of 1
+            if len(x.shape) == 2:
+                x = x.unsqueeze(1) # (batch_size, 1, input_dim_gru)
+
+            # GRU forward pass
+            # outputs_seq shape: (batch_size, seq_len, hidden_size_gru)
+            # hn_last_layer_stack shape: (num_gru_layers, batch_size, hidden_size_gru)
+            _, hn_last_layer_stack = self.gru(x)
+
+            # Use the hidden state from the last GRU layer
+            # hn_last_layer_stack[-1] gives (batch_size, hidden_size_gru)
+            last_gru_hidden_state = hn_last_layer_stack[-1]
+
+            # Apply dropout if specified and if in training mode (handled by nn.Dropout layers in decoder_mlp)
+            # Optionally, could apply F.dropout here on last_gru_hidden_state before decoder_mlp
+            # if self.dropout_rate_val > 0 and self.training:
+            #    last_gru_hidden_state = F.dropout(last_gru_hidden_state, p=self.dropout_rate_val, training=self.training)
+
+            output_logits = self.decoder_mlp(last_gru_hidden_state) # shape: (batch_size, output_dim_classifier)
+            return output_logits
   
   
     # === Get Model and Optimizer ===
@@ -460,6 +531,19 @@ def get_custom_nn_model(input_dim: int, output_dim: int = 1, model_type = "mlp",
             dim_feedforward=dim_feedforward,
             dropout=dropout_rate,
             activation_name=activation_name # 'relu' or 'gelu'
+        )
+    elif model_type == "autoregressive_decoder": # New model type
+        decoder_hidden_expansion_factor = kwargs.get("decoder_hidden_expansion_factor", 2)
+
+        model = AutoregressiveDecoder(
+            input_dim_gru=input_dim,
+            hidden_size_gru=hidden,
+            output_dim_classifier=output_dim,
+            num_gru_layers=num_layers,
+            dropout_rate=dropout, # This is the dropout rate
+            activation_fn_decoder=activation_fn, # This is the nn.Module activation instance
+            use_batch_norm_decoder=batch_norm,
+            decoder_hidden_expansion_factor=decoder_hidden_expansion_factor
         )
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
