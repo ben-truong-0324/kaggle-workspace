@@ -1,19 +1,21 @@
-mlflow
-wandb
+
 scikit-learn
-pandas
 torch
+
 matplotlib
 seaborn
 numpy
+pandas
+
 kaggle
 kagglehub
+
 ipykernel
 xgboost
 lightgbm
 
 pytest           
-# pytest-cov      
+pytest-cov      
 flake8   
 
 yfinance 
@@ -21,3 +23,17 @@ pandas_datareader
 plotly         
 umap-learn     
 fastparquet
+
+
+prometheus-client
+mlflow
+wandb
+
+tqdm
+opencv-python
+pytesseract
+
+transformers
+langsmith
+langchain
+langgraph
