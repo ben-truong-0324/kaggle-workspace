@@ -33,7 +33,9 @@ tqdm
 opencv-python
 pytesseract
 
+pydantic
 transformers
 langsmith
-langchain
 langgraph
+langchain-core
+langchain-community
